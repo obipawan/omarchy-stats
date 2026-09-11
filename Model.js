@@ -239,9 +239,8 @@ function gpuSetup(gpu) {
     return { title: "Install GPU tool", lines: lines }
   }
   if (gpu.status === "no-perm") {
-    var hs = Array.isArray(gpu.hints) ? gpu.hints.slice() : []
-    if (hs.length === 0) hs.push("The tool needs extra permission to read the GPU.")
-    return { title: "GPU tool needs permission", lines: hs }
+    return { title: "Permission needed",
+             lines: ["Your GPU is detected, but reading it needs a quick one-time unlock."] }
   }
   // status === "error": tool present but produced nothing usable
   return { title: "GPU tool error",

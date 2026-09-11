@@ -730,14 +730,14 @@ Panel {
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
           }
-          // One-click install/fix: opens the default terminal, installs the
-          // vendor's tool (or re-grants CAP_PERFMON for Intel), then runs
-          // gpu.sh --doctor to verify. Shown when we know a package and the
-          // tool is either missing (no-tool) or installed but blocked by
-          // permission (no-perm).
+          // One-click action: opens the default terminal to finish setup (install
+          // the vendor's tool, or unlock GPU reading if permission is needed),
+          // then runs the doctor to verify. Shown when we know a package and
+          // the tool is either missing (no-tool) or permission-blocked
+          // (no-perm). The label says what the button will do.
           Button {
             visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
-            text: "Install & verify"
+            text: root.gpuState.status === "no-perm" ? "Unlock GPU" : "Install & set up"
             bordered: true
             foreground: root.cpuText
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
@@ -751,8 +751,8 @@ Panel {
             textFormat: Text.PlainText
             visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
             text: root.gpuState.status === "no-perm"
-              ? "Grants permission & verifies (may ask for your password)."
-              : "Opens your terminal — you may need to type your password."
+              ? "A terminal opens so you can confirm — you'll only need your password."
+              : "A terminal opens to finish the install — you may need your password."
             color: root.cpuDim
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
