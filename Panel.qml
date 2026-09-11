@@ -351,16 +351,6 @@ Panel {
   function onGpuFinished(raw) {
     root.gpuPolling = false
     var parsed = Model.parseGpuOutput(raw)
-    // ~~TEMPORARY TEST HOOK~~ force the permission diagnostic view so the
-    // concise layout can be reviewed (the real state is now ok/ready). Remove
-    // this block to restore the live view.
-    if (parsed.ready) {
-      parsed.status = "no-perm"
-      parsed.hints = ["Needs CAP_PERFMON to read the Intel GPU.",
-                      "sudo setcap cap_perfmon+ep /usr/bin/intel_gpu_top"]
-      parsed.ready = false
-      parsed.setup = Model.gpuSetup(parsed)
-    }
     root.gpuState = parsed
     var now = Date.now() / 1000
     // Only a live sample feeds the history graph — a device that just lost
