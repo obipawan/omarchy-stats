@@ -1,0 +1,6 @@
+# Local scratch / editor cruft
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/

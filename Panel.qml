@@ -1,0 +1,605 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Quickshell
+import Quickshell.Io
+import qs.Ui
+import qs.Commons
+import "Model.js" as Model
+
+// obi.stats — a row of clickable system-stat bar items (CPU, GPU, disk,
+// RAM, battery, network). Clicking an item opens a dropdown anchored to that
+// item, styled like the network/audio dropdowns.
+//
+// This file is the bar-widget entry point (see manifest.json) AND the host
+// for the dropdown, mirroring omarchy.network: one Panel that paints its own
+// bar widgets and pops up its own KeyboardPanel.
+//
+// CPU is wired up end to end: a periodic Process samples cpu.sh, the result is
+// shown as an aggregate %, per-core bars, the top-N heavy processes, and a
+// configurable history graph. The other stats still show a placeholder.
+//
+// Per-widget settings come from the shell.json entry (see `setting()`), e.g.:
+//   topProcesses     default 8     how many heavy processes to list
+//   refreshSeconds   default 2     how often to sample CPU
+//   historyMinutes   default 60    length of the usage-history window
+// Set them with: omarchy bar set obi.stats <key> <value>
+Panel {
+  id: root
+  moduleName: "obi.stats"
+  ipcTarget: "obi.stats"
+  manageIpc: false
+
+  // The ordered list of stats (pure data, in Model.js).
+  readonly property var defs: Model.statDefinitions()
+
+  // ---- Dropdown state ---------------------------------------------------
+  property var activeStat: null
+  property var activeButton: null
+
+  // Id -> BarIconButton, filled during construction so any stat can be opened
+  // by id (bar click, hotkey IPC, summon payload). Used to anchor the panel.
+  property var statButtons: ({})
+  function registerBarButton(id, button) {
+    root.statButtons[String(id)] = button
+  }
+
+  readonly property color cpuText: bar ? bar.foreground : Color.foreground
+  readonly property color cpuDim: Qt.darker(cpuText, 1.4)
+  readonly property color cpuData: Style.selectedStateColor(cpuText, Color.accent)
+
+  // Subtle top-corner radius for bars: square bottom, slight rounding on top
+  // (Rectangle.radius always rounds all corners, so keep it small and uniform).
+  readonly property int cornerTiny: Math.max(1, Math.min(4, Style.cornerRadius > 0 ? Style.space(2) : 0))
+
+  // ---- CPU config -------------------------------------------------------
+  readonly property string cpuScript: root.pluginDir + "/cpu.sh"
+  // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
+  // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
+  readonly property string pluginDir:
+    Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName
+  readonly property int topProcesses: Math.max(1, parseInt(setting("topProcesses", 8), 10) || 8)
+  readonly property int refreshSeconds: Math.max(1, parseInt(setting("refreshSeconds", 2), 10) || 2)
+  readonly property int historySeconds: Math.max(30, parseInt(setting("historyMinutes", 60), 10) || 60) * 60
+
+  // Usage tint thresholds, as percent. Settings (e.g. `omarchy bar set
+  // obi.stats mildThreshold 40`) tune them without touching code.
+  readonly property int calmLimit: Math.max(1, parseInt(setting("calmLimit", 30), 10) || 30)
+  readonly property int mildLimit: Math.max(1, parseInt(setting("mildLimit", 60), 10) || 60)
+
+  // Theme-cohesive usage color. Maps to the three semantic roles every theme
+  // defines in colors.toml — foreground / accent / urgent — so it adapts to
+  // catppuccin, latte, ethereal, dark and light alike:
+  //   < calmLimit  -> foreground (calm; theme text)
+  //   calmLimit..mildLimit -> accent (mild; theme highlight)
+  //   >= mildLimit -> urgent (alarming; theme alarm)
+  function usageColor(percent) {
+    var v = Number(percent) || 0
+    if (v >= root.mildLimit) return Color.urgent
+    if (v >= root.calmLimit) return Color.accent
+    return root.cpuText
+  }
+
+  // ---- CPU state --------------------------------------------------------
+  property var cpuState: ({ total: 0, cores: [], procs: [] })
+  property var cpuHistory: []
+  property bool cpuPolling: false
+
+  readonly property var cpuTopProcs: Model.topProcRows(cpuState.procs, topProcesses)
+  readonly property var cpuCoreHeights: Model.normalize(
+    (function() { var v = []; for (var i = 0; i < cpuState.cores.length; i++) v.push(cpuState.cores[i].pct); return v })(),
+    100
+  )
+  readonly property int historyBuckets: Math.max(8, Math.floor((root.contentWidthEstimate - Style.space(32)) / (Style.space(3) + Style.space(1))))
+  // One real sample per column, newest anchored right, shifting left each tick.
+  readonly property var cpuGraph: Model.scrollWindow(cpuHistory, historyBuckets)
+  // Constant 0..100% axis (not max-scaled) so the timeline reads as a stable,
+  // scrolling chart rather than rescaling every refresh.
+  readonly property var cpuGraphHeights: Model.normalize(cpuGraph, 100)
+  readonly property int contentWidthEstimate: Style.space(360)
+
+  // ---- Bar widget sizing ----
+  // The CPU item is a two-line text stack (label over %) instead of an icon, so
+  // it needs a bit more height than the icon slot and enough width for both
+  // "cpu" and "100%". Other stats keep the standard icon-slot button.
+  readonly property int cpuBarHeight: Style.bar.sizeHorizontal
+  readonly property int cpuBarWidth: Style.space(34)
+
+  function barItemWidth(stat) {
+    if (stat && String(stat.id) === "cpu") return root.cpuBarWidth
+    return Style.bar.iconSlot
+  }
+
+  function barItemHeight(stat) {
+    if (stat && String(stat.id) === "cpu") return root.cpuBarHeight
+    return Style.bar.sizeHorizontal
+  }
+
+  // ---- Bar widgets: one clickable glyph per stat ------------------------
+  implicitWidth: statRow.implicitWidth
+  implicitHeight: statRow.implicitHeight
+
+  Row {
+    id: statRow
+    spacing: Style.space(1)
+
+    Repeater {
+      model: root.defs
+
+      Item {
+        required property var modelData
+        width: root.barItemWidth(modelData)
+        height: root.barItemHeight(modelData)
+
+        readonly property string statId: modelData.id
+        readonly property string statLabel: modelData.label
+        readonly property string statIcon: modelData.icon
+
+        // Non-CPU stats keep the single-icon bar button.
+        BarIconButton {
+          id: button
+          visible: statId !== "cpu"
+          bar: root.bar
+          text: statIcon
+          tooltipText: root.tooltipFor(modelData)
+          active: root.opened && root.activeStat && root.activeStat.id === modelData.id
+
+          onPressed: function(b) {
+            if (root.opened && root.activeStat && root.activeStat.id === modelData.id) root.toggleActiveStat()
+            else root.openStat(modelData, button)
+          }
+        }
+
+        // CPU shows a two-line text stack "cpu / NN%" instead of an icon, with
+        // the % tinted by the usage thresholds (same usageColor as the panel).
+        CpuBarButton {
+          id: cpuButton
+          visible: statId === "cpu"
+          stat: modelData
+        }
+
+        Component.onCompleted: root.registerBarButton(modelData.id, statId === "cpu" ? cpuButton : button)
+      }
+    }
+  }
+
+  // One CPU bar button: a clickable, tooltipped WidgetButton whose visual is a
+  // two-line stack (label over the live %) rather than a glyph. Sized to fit
+  // both lines in the bar's height; the % color follows the usage thresholds.
+  component CpuBarButton: WidgetButton {
+    id: rootbtn
+    property var stat: null
+
+    bar: root.bar
+    text: ""
+    labelVisible: false
+    hasVisualContent: true
+    fixedWidth: root.cpuBarWidth
+    fixedHeight: root.cpuBarHeight
+    horizontalMargin: 6
+    verticalPadding: 2
+    tooltipText: root.tooltipFor(stat)
+    active: root.opened && root.activeStat && root.activeStat.id === stat.id
+
+    onPressed: function(b) {
+      if (root.opened && root.activeStat && root.activeStat.id === stat.id) root.toggleActiveStat()
+      else root.openStat(stat, rootbtn)
+    }
+
+    Column {
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(0)
+
+      Text {
+        id: cpuLine
+        textFormat: Text.PlainText
+        horizontalAlignment: Text.AlignHCenter
+        text: "cpu"
+        color: root.cpuText
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+      Text {
+        id: pctLine
+        textFormat: Text.PlainText
+        horizontalAlignment: Text.AlignHCenter
+        text: Model.formatPct(root.cpuState.total)
+        color: root.usageColor(root.cpuState.total)
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+    }
+  }
+
+  // The CPU bar item surfaces the live aggregate on its tooltip.
+  function tooltipFor(stat) {
+    if (!stat) return ""
+    if (stat.id === "cpu") return stat.label + " " + Model.formatPct(root.cpuState.total)
+    return stat.label
+  }
+
+  function openStat(stat, button) {
+    root.activeStat = stat
+    root.activeButton = button || root.statButtons[stat.id]
+    if (stat.id === "cpu") refreshCpu()
+    root.controller.show()
+  }
+
+  function openStatId(id) {
+    var stat = Model.statById(root.defs, id)
+    if (!stat) return false
+    root.openStat(stat, null)
+    return true
+  }
+
+  // ============================ CPU polling ==============================
+  // Sample window passed to cpu.sh. Kept a fraction of the refreshInterval so
+  // each run finishes inside one tick — otherwise (window >= interval) the run
+  // straddles the next timer tick, which gets skipped by cpuPolling and the
+  // real cadence staggers to ~2-3x the configured refreshSeconds.
+  readonly property string cpuSampleWindow:
+    "0.5"
+  function refreshCpu() {
+    if (root.cpuPolling) return
+    root.cpuPolling = true
+    cpuProc.command = [root.cpuScript, root.cpuSampleWindow]
+    cpuProc.running = true
+  }
+
+  Process {
+    id: cpuProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onCpuFinished(text)
+    }
+  }
+
+  function onCpuFinished(raw) {
+    root.cpuPolling = false
+    var parsed = Model.parseCpuOutput(raw)
+    root.cpuState = parsed
+    var now = Date.now() / 1000
+    root.cpuHistory = Model.appendHistory(root.cpuHistory, now, parsed.total, root.historySeconds)
+  }
+
+  Timer {
+    id: cpuPollTimer
+    interval: root.refreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: { if (!root.cpuPolling) root.refreshCpu() }
+  }
+
+  // Hero text: for CPU the title is "CPU CORES" (no separate "CPU" repeat); the
+// meta line stays empty so nothing is duplicated. Other stats keep title+meta.
+  function heroTitle() {
+    if (!root.activeStat) return ""
+    if (root.activeStat.id === "cpu") return "CPU CORES"
+    return root.activeStat.label
+  }
+
+  function heroMeta() {
+    if (!root.activeStat) return ""
+    if (root.activeStat.id === "cpu") return ""
+    return Model.sectionTitle(root.activeStat) + " — coming soon"
+  }
+
+  // ---- Dropdown ----------------------------------------------------------
+  // One content column, sized from the content it holds. Every section is a
+  // direct child with real height (no anchor-only wrappers, which collapse to
+  // zero height). The card uses a comfortable minimum height so the layout
+  // has room to breathe instead of overlapping.
+  KeyboardPanel {
+    id: panel
+    anchorItem: root.activeButton
+    owner: root
+    bar: root.bar
+    open: root.opened
+    focusTarget: keyCatcher
+    contentWidth: panel.fittedContentWidth(root.contentWidthEstimate)
+    contentHeight: panel.fittedContentHeight(Math.max(dropdownColumn.implicitHeight, Style.space(330)))
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+
+      onMoveRequested: function(dx, dy) { /* reserved for per-stat navigation */ }
+      onActivateRequested: root.close()
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
+    }
+
+    Column {
+      id: dropdownColumn
+      width: parent.width
+      spacing: Style.space(12)
+
+      // ---- Hero ----
+      PanelHero {
+        readonly property var stat: Model.statById(root.defs, root.activeStat ? root.activeStat.id : "")
+        title: root.heroTitle()
+        meta: root.heroMeta()
+        foreground: root.cpuText
+        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+      }
+
+      PanelSeparator {
+        foreground: root.cpuText
+      }
+
+      // ==================== CPU body ==================================
+      Column {
+        visible: root.activeStat && root.activeStat.id === "cpu"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(10)
+
+        // Aggregate headline — label and the bigger % share a text baseline so
+        // the value doesn't sit high against the "TOTAL" caption.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            id: totalLabel
+            textFormat: Text.PlainText
+            text: "TOTAL"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            id: totalValue
+            textFormat: Text.PlainText
+            anchors.baseline: totalLabel.baseline
+            text: Model.formatPct(root.cpuState.total)
+            color: root.usageColor(root.cpuState.total)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: root.cpuState.cores.length + " CORE" + (root.cpuState.cores.length === 1 ? "" : "S")
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+        }
+
+        // Per-core bars (section title removed; bars sit right under the
+        // TOTAL headline).
+        Row {
+          id: coreBarsRow
+          width: parent.width
+          height: Style.space(42)
+          spacing: Style.space(8)
+          Repeater {
+            model: root.cpuCoreHeights
+            Item {
+              required property real modelData
+              width: Style.space(20)
+              height: coreBarsRow.height
+              Rectangle {
+                anchors.fill: parent
+                color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.08)
+              }
+              Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                width: Style.space(20)
+                height: Math.max(Style.space(1), Math.round(modelData * parent.height))
+                radius: root.cornerTiny
+                color: root.cpuData
+              }
+            }
+          }
+        }
+
+        // Core labels under each bar.
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+          Repeater {
+            model: root.cpuState.cores
+            Item {
+              required property var modelData
+              width: Style.space(20)
+              height: Style.space(16)
+              Text {
+                textFormat: Text.PlainText
+                anchors.centerIn: parent
+                text: modelData.pct + "%"
+                color: root.cpuText
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Usage history section ----
+        PanelSectionHeader {
+          text: "USAGE HISTORY"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
+
+        // History graph (columns, oldest on the left) — its own block below
+        // the per-core bars so the two never overlap.
+        Item {
+          width: parent.width
+          height: Style.space(60)
+          clip: true
+          Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
+          }
+          Row {
+            id: historyBarsRow
+            anchors.fill: parent
+            spacing: Style.space(1)
+            Repeater {
+              model: root.cpuGraphHeights
+              Item {
+                required property real modelData
+                width: Style.space(3)
+                height: historyBarsRow.height
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  anchors.bottom: parent.bottom
+                  width: Style.space(3)
+                  height: Math.max(Style.space(1), Math.round(modelData * parent.height))
+                  color: root.cpuData
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Top processes ----
+        // Fixed column widths so a long PID never shoves the % column or makes
+        // it overlap: name (flexible, elided), pid (right-aligned fixed), pct.
+        PanelSectionHeader {
+          text: "TOP PROCESSES"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          width: parent.width
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+          Repeater {
+            model: root.cpuTopProcs
+            Item {
+              required property var modelData
+              width: parent.parent.width
+              height: Style.space(22)
+              Row {
+                width: parent.width
+                height: parent.height
+
+                // Name: fills the space left over by pinned pid + pct columns.
+                Text {
+                  textFormat: Text.PlainText
+                  text: modelData.comm
+                  elide: Text.ElideRight
+                  width: Math.max(0, parent.width - Style.space(120))
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  text: modelData.pid
+                  width: Style.space(56)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Item {
+                  width: Style.space(4)
+                  height: 1
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(60)
+                  text: Model.formatPct(modelData.pct)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.usageColor(modelData.pct)
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+              }
+            }
+          }
+          Text {
+            textFormat: Text.PlainText
+            visible: root.cpuTopProcs.length === 0
+            text: "Collecting…"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      // ==================== Placeholder (other stats) =================
+      Column {
+        visible: !root.activeStat || root.activeStat.id !== "cpu"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(8)
+        PanelSectionHeader {
+          text: root.activeStat ? root.activeStat.label.toUpperCase() + " — coming soon" : ""
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
+        Text {
+          text: "Live values will appear here."
+          color: root.cpuDim
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+    }
+  }
+
+  function toggleActiveStat() {
+    if (root.activeStat) root.close()
+  }
+
+  function refresh() {
+    if (root.activeStat && root.activeStat.id === "cpu") refreshCpu()
+  }
+
+  function open() { root.controller.show() }
+  function close() { root.controller.hide() }
+
+  // On close the panel fades out over ~140ms while still mapped, so we must
+  // NOT null activeStat/activeButton here: nulling activeStat would repaint the
+  // placeholder ("Live values will appear here.") into the fading panel, and
+  // nulling activeButton would drop the anchor and re-lay-out to the top-left.
+  // `opened` already drives the fade; state is reset when a stat is next opened.
+  onOpenedChanged: {
+    // no-op: content selection is immutable on close
+  }
+
+  // ---- IPC ---------------------------------------------------------------
+  IpcHandler {
+    target: "obi.stats"
+
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.opened ? root.close() : root.open() }
+    function refresh(): void { root.refresh() }
+    function openStat(id: string): void { root.openStatId(id) }
+    function openCpu(): void { root.openStatId("cpu") }
+  }
+}

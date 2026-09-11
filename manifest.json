@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "obi.stats",
+  "name": "Stats",
+  "version": "0.1.0",
+  "author": "obi",
+  "description": "System stats monitor: CPU, GPU, disk, RAM, battery and network",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Stats",
+    "description": "CPU, GPU, disk, RAM, battery and network monitors",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
