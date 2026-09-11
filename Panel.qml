@@ -112,7 +112,6 @@ Panel {
   property var gpuHistory: []
   property bool gpuPolling: false
 
-  readonly property var gpuTopProcs: Model.topProcRows(gpuState.procs, topProcesses, "mem")
   readonly property var gpuEngineHeights: Model.normalize(
     (function() { var v = []; for (var i = 0; i < gpuState.engines.length; i++) v.push(gpuState.engines[i].pct); return v })(),
     100
@@ -352,6 +351,16 @@ Panel {
   function onGpuFinished(raw) {
     root.gpuPolling = false
     var parsed = Model.parseGpuOutput(raw)
+    // ~~TEMPORARY TEST HOOK~~ force the permission diagnostic view so the
+    // concise layout can be reviewed (the real state is now ok/ready). Remove
+    // this block to restore the live view.
+    if (parsed.ready) {
+      parsed.status = "no-perm"
+      parsed.hints = ["Needs CAP_PERFMON to read the Intel GPU.",
+                      "sudo setcap cap_perfmon+ep /usr/bin/intel_gpu_top"]
+      parsed.ready = false
+      parsed.setup = Model.gpuSetup(parsed)
+    }
     root.gpuState = parsed
     var now = Date.now() / 1000
     // Only a live sample feeds the history graph — a device that just lost
@@ -705,10 +714,11 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: modelData
+                elide: Text.ElideRight
+                width: parent.width
                 color: root.cpuDim
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideRight
               }
             }
           }
@@ -741,7 +751,7 @@ Panel {
             textFormat: Text.PlainText
             visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
             text: root.gpuState.status === "no-perm"
-              ? "Opens your terminal, grants the required permission, then verifies. (You may need your password.)"
+              ? "Grants permission & verifies (may ask for your password)."
               : "Opens your terminal — you may need to type your password."
             color: root.cpuDim
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -948,78 +958,6 @@ Panel {
                   }
                 }
               }
-            }
-          }
-
-          PanelSeparator {
-            foreground: root.cpuText
-          }
-
-          // ---- Top GPU processes (by memory) ----
-          PanelSectionHeader {
-            text: "TOP PROCESSES"
-            foreground: root.cpuText
-            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-            width: parent.width
-          }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(4)
-            Repeater {
-              model: root.gpuTopProcs
-              Item {
-                required property var modelData
-                width: parent.parent.width
-                height: Style.space(22)
-                Row {
-                  width: parent.width
-                  height: parent.height
-                  Text {
-                    textFormat: Text.PlainText
-                    text: modelData.comm
-                    elide: Text.ElideRight
-                    width: Math.max(0, parent.width - Style.space(120))
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.cpuText
-                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                    font.pixelSize: Style.font.body
-                  }
-                  Text {
-                    textFormat: Text.PlainText
-                    text: modelData.pid
-                    width: Style.space(56)
-                    horizontalAlignment: Text.AlignRight
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.cpuText
-                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                    font.pixelSize: Style.font.body
-                  }
-                  Item {
-                    width: Style.space(4)
-                    height: 1
-                  }
-                  Text {
-                    textFormat: Text.PlainText
-                    width: Style.space(60)
-                    text: Model.formatBytes(modelData.mem)
-                    horizontalAlignment: Text.AlignRight
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.cpuText
-                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                  }
-                }
-              }
-            }
-            Text {
-              textFormat: Text.PlainText
-              visible: root.gpuTopProcs.length === 0
-              text: "No GPU processes reported."
-              color: root.cpuDim
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.caption
             }
           }
         }

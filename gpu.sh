@@ -137,8 +137,10 @@ backend_intel() {
   rm -f /tmp/obi-intel-gpu-top.err
   if [ -z "$json" ]; then
     if [ -n "$err" ]; then
-      echo "hint	Unable to read GPU counters: ${INTEL_GPU_TOOL} needs the CAP_PERFMON capability (this system limits perf access)."
-      echo "hint	Grant it once so it runs without a terminal:  sudo setcap cap_perfmon+ep \$(command -v ${INTEL_GPU_TOOL})"
+      local capbin
+      capbin=$(command -v "${INTEL_GPU_TOOL}" 2>/dev/null || echo /usr/bin/${INTEL_GPU_TOOL})
+      echo "hint	Needs CAP_PERFMON to read the Intel GPU."
+      echo "hint	sudo setcap cap_perfmon+ep ${capbin}"
       return 3
     fi
     return 1
