@@ -714,31 +714,6 @@ Panel {
             wrapMode: Text.Wrap
             width: parent.width
           }
-          Repeater {
-            model: root.gpuState.setup.lines
-            Item {
-              required property string modelData
-              width: parent.parent.width
-              height: Style.space(20)
-              Text {
-                textFormat: Text.PlainText
-                text: modelData
-                wrapMode: Text.Wrap
-                width: parent.width
-                color: root.cpuDim
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.bodySmall
-              }
-            }
-          }
-          Text {
-            textFormat: Text.PlainText
-            visible: root.gpuState.setup.lines.length === 0
-            text: "Sampling GPU…"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.bodySmall
-          }
           // One-click action: opens the default terminal to finish setup — it installs
           // the vendor's tool AND grants the permission it needs in one pass —
           // then runs the doctor to verify. Shown for any not-ready state where
