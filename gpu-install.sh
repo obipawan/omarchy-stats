@@ -54,9 +54,24 @@ fi
 
 echo
 if [ "$rc" -eq 0 ]; then
+  # intel_gpu_top needs CAP_PERFMON on systems where perf access is restricted
+  # (perf_event_paranoid >= 2). Grant it once so it runs from the bar without
+  # a terminal; a package update may wipe the cap, hence the reminder below.
+  if [ "$vendor" = "intel" ]; then
+    CAP_BIN=$(command -v intel_gpu_top 2>/dev/null || echo /usr/bin/intel_gpu_top)
+    if sudo setcap cap_perfmon+ep "$CAP_BIN" 2>/dev/null; then
+      echo "Granted CAP_PERFMON to $CAP_BIN — the tool can now read GPU counters."
+    else
+      echo "Note: consider \`sudo setcap cap_perfmon+ep $CAP_BIN\` so the tool can"
+      echo "read GPU counters without a password prompt."
+    fi
+  fi
   echo "Installed. Verifying with the GPU doctor:"
   echo
   "$DIR/gpu.sh" --doctor
+  echo
+  echo "Reminder: if a future package update makes the GPU panel report a"
+  echo "permission error again, re-run this installer to re-grant it."
 else
   echo "Install did not complete cleanly (exit $rc)."
   echo "Re-run \`$DIR/gpu.sh --doctor\` after installing $PKG."

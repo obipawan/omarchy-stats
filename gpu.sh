@@ -128,9 +128,21 @@ backend_nvidia() {
 # the FIRST object with a bounded timeout so a poll never hangs the shell.
 backend_intel() {
   command -v "$INTEL_GPU_TOOL" >/dev/null 2>&1 || return 1
-  local json busy
-  json=$(timeout 1 "$INTEL_GPU_TOOL" -J 2>/dev/null || true)
-  [ -z "$json" ] && return 1
+  local json err busy
+  # Capture stderr separately: on perf_event_paranoid >= 2 (Arch default) the
+  # tool needs CAP_PERFMON and otherwise dies with "Permission denied", which
+  # we report as a distinct no-perm status instead of a vague error.
+  json=$(timeout 1 "$INTEL_GPU_TOOL" -J 2> /tmp/obi-intel-gpu-top.err || true)
+  err=$(grep -iE 'permission denied|CAP_PERFMON' /tmp/obi-intel-gpu-top.err 2>/dev/null | head -1)
+  rm -f /tmp/obi-intel-gpu-top.err
+  if [ -z "$json" ]; then
+    if [ -n "$err" ]; then
+      echo "hint	Unable to read GPU counters: ${INTEL_GPU_TOOL} needs the CAP_PERFMON capability (this system limits perf access)."
+      echo "hint	Grant it once so it runs without a terminal:  sudo setcap cap_perfmon+ep \$(command -v ${INTEL_GPU_TOOL})"
+      return 3
+    fi
+    return 1
+  fi
   # Aggregate utilization: the "busy"/"Gfx" percentage under the global stats.
   # Recognised keys across igt-gpu-tools 2.x: "busy", "Gfx", "GLOBAL".
   busy=$(printf '%s' "$json" | awk 'match($0, /"busy"[[:space:]]*:[[:space:]]*[0-9.]+/) { s=substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*/, "", s); print s; exit }')
@@ -188,7 +200,16 @@ print_doctor() {
       echo "per-engine utilization and memory."
       echo
       if command -v "$INTEL_GPU_TOOL" >/dev/null 2>&1; then
-        echo "  Tool present: $(command -v "$INTEL_GPU_TOOL")  ✓ ready"
+        echo "  Tool present: $(command -v "$INTEL_GPU_TOOL")"
+        if timeout 1 "$INTEL_GPU_TOOL" -J >/dev/null 2>&1; then
+          echo "  Reads GPU counters: ✓ ready"
+        else
+          echo "  Reads GPU counters: NO — permission denied."
+          echo "  intel_gpu_top needs the CAP_PERFMON capability on this system"
+          echo "  (perf access is restricted). Grant it once:"
+          echo "    sudo setcap cap_perfmon+ep $(command -v "$INTEL_GPU_TOOL")"
+          echo "  A package update may need this re-run."
+        fi
       else
         echo "  Missing tool: ${INTEL_GPU_TOOL}"
         echo "  Install (Arch):  sudo pacman -S intel-gpu-tools"
@@ -253,7 +274,17 @@ case "$vendor" in
     if backend_nvidia; then echo "status	ok"; else echo "status	$(command -v "$NVIDIA_SMI" >/dev/null 2>&1 && echo error || echo no-tool)"; fi
     ;;
   intel)
-    if backend_intel; then echo "status	ok"; else echo "status	$(command -v "$INTEL_GPU_TOOL" >/dev/null 2>&1 && echo error || echo no-tool)"; fi
+    backend_intel
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "status	ok"
+    elif [ "$rc" -eq 3 ]; then
+      echo "status	no-perm"
+    elif command -v "$INTEL_GPU_TOOL" >/dev/null 2>&1; then
+      echo "status	error"
+    else
+      echo "status	no-tool"
+    fi
     ;;
   amd)
     if backend_amd; then echo "status	ok"; else echo "status	no-tool"; fi

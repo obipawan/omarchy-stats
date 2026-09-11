@@ -182,13 +182,15 @@ function formatPct(value) {
 //   engine\t<name>\t<percent>       per-engine utilization (repeats)
 //   proc\t<pid>\t<memMiB>\t<comm>   top GPU processes by mem (repeats)
 // Returns { vendor, model, status, ready, total, temp, memUsed, memTotal,
-//           engines:[{name,pct}], procs:[{pid,mem,comm}], setup }.
+//           engines:[{name,pct}], procs:[{pid,mem,comm}], hints:[..], setup }.
 // `ready` is true only when status === "ok" (a live sample was produced).
+// `hints` collects backend `hint` lines (e.g. a permission fix to grant a
+// capability), shown verbatim in the setup card.
 // `setup` carries the guidance the panel shows when NOT ready.
 function parseGpuOutput(raw) {
   var lines = String(raw || "").split("\n")
   var out = { vendor: "", model: "", status: "", ready: false, total: -1,
-              temp: -1, memUsed: -1, memTotal: -1, engines: [], procs: [] }
+              temp: -1, memUsed: -1, memTotal: -1, engines: [], procs: [], hints: [] }
   for (var i = 0; i < lines.length; i++) {
     var parts = lines[i].split("\t")
     if (parts.length < 2) continue
@@ -200,6 +202,7 @@ function parseGpuOutput(raw) {
     else if (kind === "temp") { var tp = parseFloat(parts[1]); if (isFinite(tp)) out.temp = Math.round(tp) }
     else if (kind === "memUsed") { var mu = parseFloat(parts[1]); if (isFinite(mu)) out.memUsed = mu }
     else if (kind === "memTotal") { var mt = parseFloat(parts[1]); if (isFinite(mt)) out.memTotal = mt }
+    else if (kind === "hint") { var h = String(parts[1] || "").trim(); if (h !== "") out.hints.push(h) }
     else if (kind === "engine") {
       var ep = parseFloat(parts[2] || "")
       if (isFinite(ep)) out.engines.push({ name: String(parts[1] || "").toUpperCase(), pct: Math.round(ep) })
@@ -234,6 +237,14 @@ function gpuSetup(gpu) {
     if (tool.pkgs && tool.pkgs.length) lines.push("  " + tool.install)
     lines.push("Verify with:  " + tool.verify)
     return { title: "Install GPU tool", lines: lines }
+  }
+  if (gpu.status === "no-perm") {
+    var hs = Array.isArray(gpu.hints) ? gpu.hints : []
+    lines = lines.concat(hs);
+    if (lines.length === 0)
+      lines.push("The tool is installed but needs extra permission to read the GPU.")
+    lines.push("A one-time grant lets it work; a package update may need it again.")
+    return { title: "GPU tool needs permission", lines: lines }
   }
   // status === "error": tool present but produced nothing usable
   return { title: "GPU tool error",

@@ -107,7 +107,8 @@ Panel {
   // the sampler isn't ready (no tool / no GPU / error).
   property var gpuState: ({ vendor: "", model: "", status: "", ready: false,
                             total: 0, temp: -1, memUsed: -1, memTotal: -1,
-                            engines: [], procs: [], setup: { title: "", lines: [] } })
+                            engines: [], procs: [], hints: [],
+                            setup: { title: "", lines: [] } })
   property var gpuHistory: []
   property bool gpuPolling: false
 
@@ -719,11 +720,13 @@ Panel {
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
           }
-          // One-click install: opens the default terminal, installs the
-          // vendor's tool, then runs gpu.sh --doctor to verify. Only shown
-          // when a package is known for the detected vendor.
+          // One-click install/fix: opens the default terminal, installs the
+          // vendor's tool (or re-grants CAP_PERFMON for Intel), then runs
+          // gpu.sh --doctor to verify. Shown when we know a package and the
+          // tool is either missing (no-tool) or installed but blocked by
+          // permission (no-perm).
           Button {
-            visible: root.gpuState.status === "no-tool" && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
+            visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
             text: "Install & verify"
             bordered: true
             foreground: root.cpuText
@@ -736,8 +739,10 @@ Panel {
           }
           Text {
             textFormat: Text.PlainText
-            visible: root.gpuState.status === "no-tool" && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
-            text: "Opens your terminal — you may need to type your password."
+            visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
+            text: root.gpuState.status === "no-perm"
+              ? "Opens your terminal, grants the required permission, then verifies. (You may need your password.)"
+              : "Opens your terminal — you may need to type your password."
             color: root.cpuDim
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
