@@ -404,13 +404,15 @@ Panel {
     id: gpuInstallProc
   }
 
-  // Hero text: for CPU the title is "CPU CORES" (no separate "CPU" repeat); the
-  // meta line stays empty so nothing is duplicated. GPU titles by its model
-  // when known, otherwise "GPU". Other stats keep title+meta.
+  // Hero text: for CPU the title is "CPU CORES"; for GPU it's the matching
+  // "GPU CORES" (the vendor labels it engines, but "CORES" keeps the pair
+  // visually consistent). Neither repeats the stat label in meta — other stats
+  // keep title+meta. The concrete GPU model name is shown as content in the
+  // dropdown body, not in the hero.
   function heroTitle() {
     if (!root.activeStat) return ""
     if (root.activeStat.id === "cpu") return "CPU CORES"
-    if (root.activeStat.id === "gpu") return root.gpuState.model ? root.gpuState.model : "GPU"
+    if (root.activeStat.id === "gpu") return "GPU CORES"
     return root.activeStat.label
   }
 
@@ -693,6 +695,20 @@ Panel {
         visible: root.activeStat && root.activeStat.id === "gpu"
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(10)
+
+        // Device line: the GPU model/family as dropdown content (the hero
+        // leads with "GPU CORES" instead, matching CPU CORES). Shown in both
+        // the setup and live states; empty until a sample parses.
+        Text {
+          visible: root.gpuState.model !== ""
+          textFormat: Text.PlainText
+          text: root.gpuState.model
+          elide: Text.ElideRight
+          width: parent.width
+          color: root.cpuDim
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
 
         // ---- setup card (shown until a live sample is available) ----
         Column {
