@@ -229,17 +229,15 @@ function gpuSetup(gpu) {
              lines: ["No GPU could be found on this system.",
                      "The GPU panel needs a supported graphics adapter."] }
   }
-  if (gpu.status === "no-tool") {
+  if (gpu.status === "no-tool" || gpu.status === "no-perm") {
+    // One setup action covers both: the helper installs the tool AND grants
+    // the permission it needs, so there's no separate permission diagnostic.
     return { title: "Setup needed",
-             lines: ["Tap Set up GPU below to install the monitoring tool."] }
-  }
-  if (gpu.status === "no-perm") {
-    return { title: "Permission needed",
-             lines: ["Tap Unlock GPU below to enable live stats."] }
+             lines: ["Tap Install GPU Helper below to finish one-time setup."] }
   }
   // status === "error": tool present but produced nothing usable
   return { title: "Something went wrong",
-           lines: ["Tap Set up GPU below to fix it automatically."] }
+           lines: ["Tap Install GPU Helper below to fix it automatically."] }
 }
 
 // Map a vendor tag to its helper tool, package(s) and verify command. Kept

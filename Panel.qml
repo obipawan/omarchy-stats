@@ -375,11 +375,11 @@ Panel {
 
   function installGpuTool() {
     var tool = Model.gpuToolFor(root.gpuState.vendor)
-    // Guard: only offer the button when we know which package to install.
+    // Guard: only offer the action when we know which package to install.
     if (!tool || !tool.pkg) return
     gpuInstallProc.command = [
       "setsid", "uwsm-app", "--", "xdg-terminal-exec",
-      "--app-id=org.omarchy.terminal", "--title=Install GPU tool",
+      "--app-id=org.omarchy.terminal", "--title=Install GPU Helper",
       "-e", "bash", root.gpuInstallScript
     ]
     gpuInstallProc.running = true
@@ -739,14 +739,14 @@ Panel {
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
           }
-          // One-click action: opens the default terminal to finish setup (install
-          // the vendor's tool, or unlock GPU reading if permission is needed),
-          // then runs the doctor to verify. Shown when we know a package and
-          // the tool is either missing (no-tool) or permission-blocked
-          // (no-perm). The label says what the button will do.
+          // One-click action: opens the default terminal to finish setup — it installs
+          // the vendor's tool AND grants the permission it needs in one pass —
+          // then runs the doctor to verify. Shown for any not-ready state where
+          // we know a package (missing tool, permission-blocked, or a tool that
+          // produced nothing). A single "Install GPU Helper" CTA covers them.
           Button {
-            visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
-            text: root.gpuState.status === "no-perm" ? "Unlock GPU" : "Set up GPU"
+            visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm" || root.gpuState.status === "error") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
+            text: "Install GPU Helper"
             bordered: true
             foreground: root.cpuText
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
