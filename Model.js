@@ -248,19 +248,19 @@ function gpuSetup(gpu) {
 function gpuToolFor(vendor) {
   switch (String(vendor || "").toLowerCase()) {
     case "intel":
-      return { tool: "intel_gpu_top", pkgs: ["intel-gpu-tools"],
+      return { tool: "intel_gpu_top", pkg: "intel-gpu-tools", pkgs: ["intel-gpu-tools"],
                install: "sudo pacman -S intel-gpu-tools",
                verify: "intel_gpu_top -J   (Ctrl-C to stop)" }
     case "nvidia":
-      return { tool: "nvidia-smi", pkgs: ["nvidia-utils"],
+      return { tool: "nvidia-smi", pkg: "nvidia-utils", pkgs: ["nvidia-utils"],
                install: "sudo pacman -S nvidia-utils",
                verify: "nvidia-smi --query-gpu=name" }
     case "amd":
-      return { tool: "rocm-smi", pkgs: ["rocm-smi-lib", "radeontop"],
+      return { tool: "rocm-smi", pkg: "rocm-smi-lib", pkgs: ["rocm-smi-lib", "radeontop"],
                install: "sudo pacman -S rocm-smi-lib   (or: sudo pacman -S radeontop)",
                verify: "rocm-smi --showuse" }
     default:
-      return { tool: "", pkgs: [], install: "", verify: "" }
+      return { tool: "", pkg: "", pkgs: [], install: "", verify: "" }
   }
 }
 

@@ -366,6 +366,34 @@ Panel {
     onTriggered: { if (!root.gpuPolling) root.refreshGpu() }
   }
 
+  // ---- GPU tool install (one-shot, launched from the setup card) --------
+  // `installGpuScript` is bundled with the plugin; the button launches it in
+  // the user's default terminal (via Omarchy's xdg-terminal-exec + uwsm-app
+  // pattern) so the sudo/password prompt appears in a real terminal, not the
+  // bar. The script installs the vendor's package and runs gpu.sh --doctor.
+  readonly property string gpuInstallScript: root.pluginDir + "/gpu-install.sh"
+
+  function installGpuTool() {
+    var tool = Model.gpuToolFor(root.gpuState.vendor)
+    // Guard: only offer the button when we know which package to install.
+    if (!tool || !tool.pkg) return
+    gpuInstallProc.command = [
+      "setsid", "uwsm-app", "--", "xdg-terminal-exec",
+      "--app-id=org.omarchy.terminal", "--title=Install GPU tool",
+      "-e", "bash", root.gpuInstallScript
+    ]
+    gpuInstallProc.running = true
+    // Refresh shortly after so the panel reflects the new tool status once
+    // the terminal work is done (install + doctor). Polling already covers
+    // this; the extra kick just makes the setup card feel responsive.
+    gpuPollTimer.restart()
+    refreshGpu()
+  }
+
+  Process {
+    id: gpuInstallProc
+  }
+
   // Hero text: for CPU the title is "CPU CORES" (no separate "CPU" repeat); the
   // meta line stays empty so nothing is duplicated. GPU titles by its model
   // when known, otherwise "GPU". Other stats keep title+meta.
@@ -690,6 +718,30 @@ Panel {
             color: root.cpuDim
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
+          }
+          // One-click install: opens the default terminal, installs the
+          // vendor's tool, then runs gpu.sh --doctor to verify. Only shown
+          // when a package is known for the detected vendor.
+          Button {
+            visible: root.gpuState.status === "no-tool" && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
+            text: "Install & verify"
+            bordered: true
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            fontSize: Style.font.bodySmall
+            horizontalPadding: Style.space(14)
+            verticalPadding: Style.space(4)
+            Layout.alignment: Qt.AlignHCenter
+            onClicked: root.installGpuTool()
+          }
+          Text {
+            textFormat: Text.PlainText
+            visible: root.gpuState.status === "no-tool" && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
+            text: "Opens your terminal — you may need to type your password."
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            Layout.alignment: Qt.AlignHCenter
           }
         }
 
