@@ -421,7 +421,7 @@ Panel {
     if (root.activeStat.id === "cpu") return ""
     if (root.activeStat.id === "gpu") {
       if (root.gpuState.ready) return root.gpuState.vendor.toUpperCase()
-      return "— " + (root.gpuState.setup ? root.gpuState.setup.title : "setup needed")
+      return root.gpuState.setup ? root.gpuState.setup.title : "setup needed"
     }
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
