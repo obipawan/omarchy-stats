@@ -223,8 +223,6 @@ function parseGpuOutput(raw) {
 function gpuSetup(gpu) {
   var lines = []
   if (!gpu) return { title: "GPU unavailable", lines: ["No GPU data."] }
-  var vendor = String(gpu.vendor || "").toLowerCase()
-  var tool = gpuToolFor(vendor)
   if (gpu.status === "ok") return { title: "", lines: [] }
   if (gpu.status === "no-gpu") {
     return { title: "No GPU detected",
@@ -232,21 +230,16 @@ function gpuSetup(gpu) {
                      "The GPU panel needs a supported graphics adapter."] }
   }
   if (gpu.status === "no-tool") {
-    lines.push("The plugin needs a helper to read your " + vendor.toUpperCase() + " GPU.")
-    lines.push("Install the monitoring tool, then reopen this panel:")
-    if (tool.pkgs && tool.pkgs.length) lines.push("  " + tool.install)
-    lines.push("Verify with:  " + tool.verify)
-    return { title: "Install GPU tool", lines: lines }
+    return { title: "Setup needed",
+             lines: ["Tap Set up GPU below to install the monitoring tool."] }
   }
   if (gpu.status === "no-perm") {
     return { title: "Permission needed",
              lines: ["Tap Unlock GPU below to enable live stats."] }
   }
   // status === "error": tool present but produced nothing usable
-  return { title: "GPU tool error",
-           lines: ["The " + vendor.toUpperCase() + " tool ran but returned no",
-                   "usable values. Try installing/updating it, then restart",
-                   "the shell."] }
+  return { title: "Something went wrong",
+           lines: ["Tap Set up GPU below to fix it automatically."] }
 }
 
 // Map a vendor tag to its helper tool, package(s) and verify command. Kept
