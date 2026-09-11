@@ -23,12 +23,20 @@ manifest.json   plugin manifest (id obi.stats, kind bar-widget)
 Panel.qml       bar widget + dropdown UI host (QML)
 Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (no mpstat/sar/htop deps)
+gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
 ```
 
-> **`cpu.sh` must stay executable (`chmod +x cpu.sh`).** The shell runs it as a
-> program; if the bit is lost (some manual copies strip it), the CPU sampler
-> silently fails and the dropdown shows stale/empty data. Git preserves the
-> `100755` mode in this repo — just don't drop it when back-sourcing.
+> **`cpu.sh` and `gpu.sh` must stay executable (`chmod +x`).** The shell runs
+> them as programs; if the bit is lost (some manual copies strip it), the
+> sampler silently fails and the dropdown shows stale/empty data. Git preserves
+> the `100755` mode in this repo — just don't drop them when back-sourcing.
+
+> **GPU is vendor-agnostic + best-effort.** `gpu.sh` shells out to whichever
+> helper the detected GPU needs (`intel_gpu_top`, `nvidia-smi`, `rocm-smi`/
+> `radeontop`) and ships an in-panel installer hint + `gpu.sh --doctor` when the
+> tool is absent. This box has an Intel Iris 6100 with **no** GPU tooling
+> installed, so we validated the Intel/NVIDIA/AMD parsing paths with fake-tool
+> stubs and live-tested the no-tool fallback only.
 
 ## THE CAVEAT: two copies, and how to develop
 

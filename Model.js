@@ -69,12 +69,19 @@ function parseCpuOutput(raw) {
 }
 
 // Keep the newest `limit` process rows (cpu.sh already sorts desc by %; this
-// is a defensive cap and a testable unit on its own).
-function topProcRows(procs, limit) {
+// is a defensive cap and a testable unit on its own). `field` names the metric
+// to filter on — "pct" for CPU rows, "mem" for GPU rows — so rows whose only
+// distinguishing value is unknown (0) are dropped, not rows lacking the field
+// entirely (e.g. a GPU proc with mem but no meaningful pct).
+function topProcRows(procs, limit, field) {
   var rows = Array.isArray(procs) ? procs : []
   var n = Math.max(1, parseInt(limit, 10) || rows.length)
+  var key = String(field || "pct")
   var trimmed = rows.slice(0, Math.min(n, rows.length))
-  return trimmed.filter(function(p) { return p.pct > 0 || p.comm !== "" })
+  return trimmed.filter(function(p) {
+    var v = Number(p && p[key])
+    return (isFinite(v) && v > 0) || String(p && p.comm || "") !== ""
+  })
 }
 
 // History ring buffer. Appends {time, total} and drops anything older than
@@ -162,6 +169,117 @@ function formatPct(value) {
   return Math.round(v) + "%"
 }
 
+// ============================ GPU =========================================
+// Parses the tab-separated output of gpu.sh into a single object the panel
+// binds to. gpu.sh emits (mirroring cpu.sh's total/core/proc shape):
+//   vendor\t<name>                  intel | nvidia | amd | unknown
+//   model\t<string>
+//   status\t<ok|no-tool|no-gpu|error>
+//   total\t<percent>                aggregate utilization (0..100)
+//   temp\t<celcius>                 optional
+//   memUsed\t<MiB>                  optional
+//   memTotal\t<MiB>                 optional
+//   engine\t<name>\t<percent>       per-engine utilization (repeats)
+//   proc\t<pid>\t<memMiB>\t<comm>   top GPU processes by mem (repeats)
+// Returns { vendor, model, status, ready, total, temp, memUsed, memTotal,
+//           engines:[{name,pct}], procs:[{pid,mem,comm}], setup }.
+// `ready` is true only when status === "ok" (a live sample was produced).
+// `setup` carries the guidance the panel shows when NOT ready.
+function parseGpuOutput(raw) {
+  var lines = String(raw || "").split("\n")
+  var out = { vendor: "", model: "", status: "", ready: false, total: -1,
+              temp: -1, memUsed: -1, memTotal: -1, engines: [], procs: [] }
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("\t")
+    if (parts.length < 2) continue
+    var kind = parts[0]
+    if (kind === "vendor") out.vendor = String(parts[1] || "")
+    else if (kind === "model") out.model = String(parts[1] || "")
+    else if (kind === "status") out.status = String(parts[1] || "")
+    else if (kind === "total") { var tv = parseFloat(parts[1]); if (isFinite(tv)) out.total = Math.round(tv * 10) / 10 }
+    else if (kind === "temp") { var tp = parseFloat(parts[1]); if (isFinite(tp)) out.temp = Math.round(tp) }
+    else if (kind === "memUsed") { var mu = parseFloat(parts[1]); if (isFinite(mu)) out.memUsed = mu }
+    else if (kind === "memTotal") { var mt = parseFloat(parts[1]); if (isFinite(mt)) out.memTotal = mt }
+    else if (kind === "engine") {
+      var ep = parseFloat(parts[2] || "")
+      if (isFinite(ep)) out.engines.push({ name: String(parts[1] || "").toUpperCase(), pct: Math.round(ep) })
+    } else if (kind === "proc") {
+      var mp = parseFloat(parts[2] || "")
+      if (isFinite(mp))
+        out.procs.push({ pid: String(parts[1] || "").trim(), mem: Math.round(mp),
+                         comm: String(parts[3] || "").trim() })
+    }
+  }
+  out.ready = out.status === "ok" && out.total >= 0
+  out.setup = gpuSetup(out)
+  return out
+}
+
+// Derive the panel-facing setup guidance from a parsed GPU state. Returns a
+// { title, lines:[..] } describing what to do when the sampler isn't ready.
+function gpuSetup(gpu) {
+  var lines = []
+  if (!gpu) return { title: "GPU unavailable", lines: ["No GPU data."] }
+  var vendor = String(gpu.vendor || "").toLowerCase()
+  var tool = gpuToolFor(vendor)
+  if (gpu.status === "ok") return { title: "", lines: [] }
+  if (gpu.status === "no-gpu") {
+    return { title: "No GPU detected",
+             lines: ["No GPU could be found on this system.",
+                     "The GPU panel needs a supported graphics adapter."] }
+  }
+  if (gpu.status === "no-tool") {
+    lines.push("The plugin needs a helper to read your " + vendor.toUpperCase() + " GPU.")
+    lines.push("Install the monitoring tool, then reopen this panel:")
+    if (tool.pkgs && tool.pkgs.length) lines.push("  " + tool.install)
+    lines.push("Verify with:  " + tool.verify)
+    return { title: "Install GPU tool", lines: lines }
+  }
+  // status === "error": tool present but produced nothing usable
+  return { title: "GPU tool error",
+           lines: ["The " + vendor.toUpperCase() + " tool ran but returned no",
+                   "usable values. Try installing/updating it, then restart",
+                   "the shell."] }
+}
+
+// Map a vendor tag to its helper tool, package(s) and verify command. Kept
+// here (not in gpu.sh) so the panel can render friendly guidance and so the
+// hint is unit-testable.
+function gpuToolFor(vendor) {
+  switch (String(vendor || "").toLowerCase()) {
+    case "intel":
+      return { tool: "intel_gpu_top", pkgs: ["intel-gpu-tools"],
+               install: "sudo pacman -S intel-gpu-tools",
+               verify: "intel_gpu_top -J   (Ctrl-C to stop)" }
+    case "nvidia":
+      return { tool: "nvidia-smi", pkgs: ["nvidia-utils"],
+               install: "sudo pacman -S nvidia-utils",
+               verify: "nvidia-smi --query-gpu=name" }
+    case "amd":
+      return { tool: "rocm-smi", pkgs: ["rocm-smi-lib", "radeontop"],
+               install: "sudo pacman -S rocm-smi-lib   (or: sudo pacman -S radeontop)",
+               verify: "rocm-smi --showuse" }
+    default:
+      return { tool: "", pkgs: [], install: "", verify: "" }
+  }
+}
+
+// Format a MiB value as a human size (e.g. "512M", "7.5G"). Returns "--" out
+// of range / for "not available" (-1).
+function formatBytes(mib) {
+  var v = parseFloat(mib)
+  if (!isFinite(v) || v < 0) return "--"
+  if (v >= 1024) return (Math.round(v / 102.4) / 10) + "G"
+  return Math.round(v) + "M"
+}
+
+// Format a temperature as "NN°C", or "--" when not available.
+function formatTemp(celsius) {
+  var v = parseFloat(celsius)
+  if (!isFinite(v) || v < 0) return "--"
+  return Math.round(v) + "°C"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     statDefinitions: statDefinitions,
@@ -174,6 +292,11 @@ if (typeof module !== "undefined") {
     scrollWindow: scrollWindow,
     averageValue: averageValue,
     normalize: normalize,
-    formatPct: formatPct
+    formatPct: formatPct,
+    parseGpuOutput: parseGpuOutput,
+    gpuSetup: gpuSetup,
+    gpuToolFor: gpuToolFor,
+    formatBytes: formatBytes,
+    formatTemp: formatTemp
   }
 }

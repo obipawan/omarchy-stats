@@ -13,7 +13,14 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
     right, old values pushed left; window length configurable).
   - **Top processes** table (name · PID · %cpu) with fixed column alignment.
   - A two-line `cpu / NN%` text in the bar instead of an icon.
-- GPU, Disk, RAM, Battery, Network — bar items present; dropdowns are placeholders
+- **GPU** — vendor-agnostic monitor for Intel / NVIDIA / AMD:
+  - Live usage headline, per-engine bars, memory used/total, temperature.
+  - The same scrolling **usage history graph** as CPU, plus **top GPU processes**
+    (by memory when the driver reports them).
+  - A two-line `gpu / NN%` text in the bar.
+  - **Auto setup guidance**: if the tool for your GPU isn't installed, the panel
+    tells you exactly what to install and how to verify — no config hunting.
+- Disk, RAM, Battery, Network — bar items present; dropdowns are placeholders
   for now (next steps).
 
 ## Install
@@ -31,13 +38,13 @@ Omarchy clones the repo, validates `manifest.json`, and installs it under
 omarchy bar put obi.stats --section center
 ```
 
-> Permissions: the sampler script (`cpu.sh`) must be executable. Git preserves
-> the executable bit set in this repo.
+> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`) must be executable. Git
+> preserves the executable bit set in this repo.
 
 ### Manual / from source
 
 Copy the repository contents into `~/.config/omarchy/plugins/obi.stats/`
-(`chmod +x cpu.sh`), then `omarchy restart shell`.
+(`chmod +x cpu.sh gpu.sh`), then `omarchy restart shell`.
 
 ## Configuration
 
@@ -71,6 +78,7 @@ manifest.json   plugin manifest (id obi.stats, kind bar-widget)
 Panel.qml       bar-widget + dropdown UI host (QML)
 Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (aggregate, per-core, per-process)
+gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
 ```
 
 - `Panel.qml` is the bar-widget entry point *and* the dropdown host — one widget
@@ -79,6 +87,12 @@ cpu.sh          /proc-based CPU sampler (aggregate, per-core, per-process)
 - `cpu.sh` reads `/proc/stat` + `/proc/<pid>/stat` twice (a configurable window
   apart) and prints tab-separated `total` / `core` / `proc` lines. No
   `mpstat`/`sar`/`htop` dependency.
+- `gpu.sh` detects the GPU (Intel / NVIDIA / AMD) and hands off to the matching
+  helper — `intel_gpu_top`, `nvidia-smi` or `rocm-smi`/`radeontop` — printing a
+  shared `vendor` / `model` / `status` / `total` / `temp` / `mem*` / `engine` /
+  `proc` schema. `gpu.sh --doctor` prints step-by-step setup for the detected
+  GPU. Run `omarchy-shell obi.stats openGpu` to see the panel's setup guidance
+  when the tool is missing.
 - `Model.js` parses the sampler output and implements the scrolling history
   window and process-table caps as pure functions (test with `node`).
 

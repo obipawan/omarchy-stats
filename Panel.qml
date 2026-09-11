@@ -54,6 +54,7 @@ Panel {
 
   // ---- CPU config -------------------------------------------------------
   readonly property string cpuScript: root.pluginDir + "/cpu.sh"
+  readonly property string gpuScript: root.pluginDir + "/gpu.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
   // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
   readonly property string pluginDir:
@@ -98,20 +99,59 @@ Panel {
   readonly property var cpuGraphHeights: Model.normalize(cpuGraph, 100)
   readonly property int contentWidthEstimate: Style.space(360)
 
+  // ---- GPU state -------------------------------------------------------
+  // Mirrors cpuState, but with extra fields from the vendor-agnostic sampler:
+  // vendor allows vendor-specific upgrade prompts, temp/mem are live when the
+  // backend exposes them, engines hold per-engine utilization and procs hold
+  // top GPU processes by memory. `setup` carries doctor-style guidance when
+  // the sampler isn't ready (no tool / no GPU / error).
+  property var gpuState: ({ vendor: "", model: "", status: "", ready: false,
+                            total: 0, temp: -1, memUsed: -1, memTotal: -1,
+                            engines: [], procs: [], setup: { title: "", lines: [] } })
+  property var gpuHistory: []
+  property bool gpuPolling: false
+
+  readonly property var gpuTopProcs: Model.topProcRows(gpuState.procs, topProcesses, "mem")
+  readonly property var gpuEngineHeights: Model.normalize(
+    (function() { var v = []; for (var i = 0; i < gpuState.engines.length; i++) v.push(gpuState.engines[i].pct); return v })(),
+    100
+  )
+  // Same fixed 0..100% axis as CPU so both charts read consistently.
+  readonly property var gpuGraph: Model.scrollWindow(gpuHistory, historyBuckets)
+  readonly property var gpuGraphHeights: Model.normalize(gpuGraph, 100)
+  // Memory fraction used, 0..1 (0 when unknown) for the memory bar.
+  readonly property real gpuMemPct: gpuState.memTotal > 0 ? Math.min(1, Math.max(0, gpuState.memUsed / gpuState.memTotal)) : 0
+  // shown memory text like "512M / 8.1G", or "--" when the backend lacks it.
+  readonly property string gpuMemText:
+    (gpuState.memUsed >= 0 && gpuState.memTotal >= 0)
+      ? Model.formatBytes(gpuState.memUsed) + " / " + Model.formatBytes(gpuState.memTotal)
+      : "--"
+
   // ---- Bar widget sizing ----
-  // The CPU item is a two-line text stack (label over %) instead of an icon, so
-  // it needs a bit more height than the icon slot and enough width for both
-  // "cpu" and "100%". Other stats keep the standard icon-slot button.
+  // CPU and GPU items are two-line text stacks (label over %) instead of an
+  // icon, so they need a bit more height than the icon slot and enough width
+  // for their label + "100%". The other stats keep the standard icon button.
   readonly property int cpuBarHeight: Style.bar.sizeHorizontal
   readonly property int cpuBarWidth: Style.space(34)
+  readonly property int gpuBarHeight: Style.bar.sizeHorizontal
+  readonly property int gpuBarWidth: Style.space(34)
+
+  // Whether a stat renders as a live two-line % stack in the bar.
+  function isLiveStat(stat) {
+    if (!stat) return false
+    var id = String(stat.id)
+    return id === "cpu" || id === "gpu"
+  }
 
   function barItemWidth(stat) {
     if (stat && String(stat.id) === "cpu") return root.cpuBarWidth
+    if (stat && String(stat.id) === "gpu") return root.gpuBarWidth
     return Style.bar.iconSlot
   }
 
   function barItemHeight(stat) {
     if (stat && String(stat.id) === "cpu") return root.cpuBarHeight
+    if (stat && String(stat.id) === "gpu") return root.gpuBarHeight
     return Style.bar.sizeHorizontal
   }
 
@@ -135,10 +175,10 @@ Panel {
         readonly property string statLabel: modelData.label
         readonly property string statIcon: modelData.icon
 
-        // Non-CPU stats keep the single-icon bar button.
+        // Non-live stats keep the single-icon bar button.
         BarIconButton {
           id: button
-          visible: statId !== "cpu"
+          visible: !root.isLiveStat(modelData)
           bar: root.bar
           text: statIcon
           tooltipText: root.tooltipFor(modelData)
@@ -150,23 +190,25 @@ Panel {
           }
         }
 
-        // CPU shows a two-line text stack "cpu / NN%" instead of an icon, with
-        // the % tinted by the usage thresholds (same usageColor as the panel).
-        CpuBarButton {
-          id: cpuButton
-          visible: statId === "cpu"
+        // CPU and GPU show a two-line text stack "cpu / NN%" instead of an
+        // icon, with the % tinted by the usage thresholds (same usageColor as
+        // the panel).
+        PctBarButton {
+          id: pctButton
+          visible: root.isLiveStat(modelData)
           stat: modelData
         }
 
-        Component.onCompleted: root.registerBarButton(modelData.id, statId === "cpu" ? cpuButton : button)
+        Component.onCompleted: root.registerBarButton(modelData.id, root.isLiveStat(modelData) ? pctButton : button)
       }
     }
   }
 
-  // One CPU bar button: a clickable, tooltipped WidgetButton whose visual is a
-  // two-line stack (label over the live %) rather than a glyph. Sized to fit
+  // A live % bar button: a clickable, tooltipped WidgetButton whose visual is
+  // a two-line stack (label over the live %) rather than a glyph. Sized to fit
   // both lines in the bar's height; the % color follows the usage thresholds.
-  component CpuBarButton: WidgetButton {
+  // Drives the CPU and GPU items, whose live value/color come from the stat id.
+  component PctBarButton: WidgetButton {
     id: rootbtn
     property var stat: null
 
@@ -174,8 +216,8 @@ Panel {
     text: ""
     labelVisible: false
     hasVisualContent: true
-    fixedWidth: root.cpuBarWidth
-    fixedHeight: root.cpuBarHeight
+    fixedWidth: root.barItemWidth(stat)
+    fixedHeight: root.barItemHeight(stat)
     horizontalMargin: 6
     verticalPadding: 2
     tooltipText: root.tooltipFor(stat)
@@ -192,10 +234,9 @@ Panel {
       spacing: Style.space(0)
 
       Text {
-        id: cpuLine
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: "cpu"
+        text: stat.label.toLowerCase()
         color: root.cpuText
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.caption
@@ -205,8 +246,8 @@ Panel {
         id: pctLine
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: Model.formatPct(root.cpuState.total)
-        color: root.usageColor(root.cpuState.total)
+        text: root.livePctText(stat.id)
+        color: root.livePctColor(stat.id)
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.caption
         font.bold: true
@@ -214,17 +255,35 @@ Panel {
     }
   }
 
-  // The CPU bar item surfaces the live aggregate on its tooltip.
+  // The CPU/GPU bar items surface the live aggregate on their tooltip.
   function tooltipFor(stat) {
     if (!stat) return ""
     if (stat.id === "cpu") return stat.label + " " + Model.formatPct(root.cpuState.total)
+    if (stat.id === "gpu") {
+      if (root.gpuState.ready) return stat.label + " " + Model.formatPct(root.gpuState.total)
+      return stat.label + " — " + (root.gpuState.setup ? root.gpuState.setup.title : "setup needed")
+    }
     return stat.label
+  }
+
+  // Live % text/color for a stat's bar label, keyed by stat id (cpu/gpu).
+  function livePctText(id) {
+    if (String(id) === "cpu") return Model.formatPct(root.cpuState.total)
+    if (String(id) === "gpu") return root.gpuState.ready ? Model.formatPct(root.gpuState.total) : "…"
+    return "--"
+  }
+
+  function livePctColor(id) {
+    if (String(id) === "cpu") return root.usageColor(root.cpuState.total)
+    if (String(id) === "gpu") return root.usageColor(root.gpuState.total)
+    return root.cpuText
   }
 
   function openStat(stat, button) {
     root.activeStat = stat
     root.activeButton = button || root.statButtons[stat.id]
     if (stat.id === "cpu") refreshCpu()
+    else if (stat.id === "gpu") refreshGpu()
     root.controller.show()
   }
 
@@ -273,17 +332,57 @@ Panel {
     onTriggered: { if (!root.cpuPolling) root.refreshCpu() }
   }
 
+  // ============================ GPU polling ==============================
+  function refreshGpu() {
+    if (root.gpuPolling) return
+    root.gpuPolling = true
+    gpuProc.command = [root.gpuScript]
+    gpuProc.running = true
+  }
+
+  Process {
+    id: gpuProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onGpuFinished(text)
+    }
+  }
+
+  function onGpuFinished(raw) {
+    root.gpuPolling = false
+    var parsed = Model.parseGpuOutput(raw)
+    root.gpuState = parsed
+    var now = Date.now() / 1000
+    // Only a live sample feeds the history graph — a device that just lost
+    // its tool shouldn't spike the chart with stale/zero data.
+    if (parsed.ready) root.gpuHistory = Model.appendHistory(root.gpuHistory, now, parsed.total, root.historySeconds)
+  }
+
+  Timer {
+    id: gpuPollTimer
+    interval: root.refreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: { if (!root.gpuPolling) root.refreshGpu() }
+  }
+
   // Hero text: for CPU the title is "CPU CORES" (no separate "CPU" repeat); the
-// meta line stays empty so nothing is duplicated. Other stats keep title+meta.
+  // meta line stays empty so nothing is duplicated. GPU titles by its model
+  // when known, otherwise "GPU". Other stats keep title+meta.
   function heroTitle() {
     if (!root.activeStat) return ""
     if (root.activeStat.id === "cpu") return "CPU CORES"
+    if (root.activeStat.id === "gpu") return root.gpuState.model ? root.gpuState.model : "GPU"
     return root.activeStat.label
   }
 
   function heroMeta() {
     if (!root.activeStat) return ""
     if (root.activeStat.id === "cpu") return ""
+    if (root.activeStat.id === "gpu") {
+      if (root.gpuState.ready) return root.gpuState.vendor.toUpperCase()
+      return "— " + (root.gpuState.setup ? root.gpuState.setup.title : "setup needed")
+    }
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
 
@@ -549,9 +648,329 @@ Panel {
         }
       }
 
+      // ==================== GPU body ==================================
+      // Two modes: a setup card (tool/no-gpu/error) or the live view. Both sit
+      // in the same column so the panel height stays stable between them.
+      Column {
+        visible: root.activeStat && root.activeStat.id === "gpu"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(10)
+
+        // ---- setup card (shown until a live sample is available) ----
+        Column {
+          visible: !root.gpuState.ready
+          width: parent.width
+          spacing: Style.space(8)
+          PanelSectionHeader {
+            text: root.gpuState.setup.title ? root.gpuState.setup.title : "GPU SETUP"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+          Repeater {
+            model: root.gpuState.setup.lines
+            Item {
+              required property string modelData
+              width: parent.parent.width
+              height: Style.space(20)
+              Text {
+                textFormat: Text.PlainText
+                text: modelData
+                color: root.cpuDim
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+              }
+            }
+          }
+          Text {
+            textFormat: Text.PlainText
+            visible: root.gpuState.setup.lines.length === 0
+            text: "Sampling GPU…"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
+
+        // ---- live view ----
+        Column {
+          visible: root.gpuState.ready
+          width: parent.width
+          spacing: Style.space(10)
+
+          // Aggregate headline — label and the bigger % share a baseline like
+          // CPU's TOTAL row; the engine count + temp live on the right.
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "USAGE"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              anchors.baseline: usageLabel.baseline
+              text: Model.formatPct(root.gpuState.total)
+              color: root.usageColor(root.gpuState.total)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
+            Text {
+              id: usageLabel
+              textFormat: Text.PlainText
+              text: (root.gpuState.engines.length > 0 ? root.gpuState.engines.length + " ENGINE" + (root.gpuState.engines.length === 1 ? "" : "S") : "")
+                   + (root.gpuState.temp >= 0 ? "  ·  " + Model.formatTemp(root.gpuState.temp) : "")
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+            }
+          }
+
+          // Per-engine bars (e.g. GFX, Render, Copy — mirrors CPU's core bars).
+          Row {
+            id: engineBarsRow
+            width: parent.width
+            height: Style.space(42)
+            spacing: Style.space(6)
+            Repeater {
+              model: root.gpuEngineHeights
+              Item {
+                required property real modelData
+                width: Style.space(24)
+                height: engineBarsRow.height
+                Rectangle {
+                  anchors.fill: parent
+                  color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.08)
+                }
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  anchors.bottom: parent.bottom
+                  width: Style.space(24)
+                  height: Math.max(Style.space(1), Math.round(modelData * parent.height))
+                  radius: root.cornerTiny
+                  color: root.cpuData
+                }
+              }
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
+          }
+
+          // Engine labels under each bar.
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+            Repeater {
+              model: root.gpuState.engines
+              Item {
+                required property var modelData
+                width: Style.space(24)
+                height: Style.space(16)
+                Text {
+                  textFormat: Text.PlainText
+                  anchors.centerIn: parent
+                  text: modelData.name
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
+          }
+
+          // Memory row — only when the backend exposes it.
+          Row {
+            visible: root.gpuState.memTotal > 0
+            width: parent.width
+            spacing: Style.space(10)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "MEMORY"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: root.gpuMemText
+              color: root.cpuText
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: Model.formatPct(root.gpuMemPct * 100)
+              color: root.usageColor(root.gpuMemPct * 100)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+          }
+
+          // Memory bar (horizontal track + fill). A fixed-height Item hosts the two
+          // Rectangles via anchors (Rectangles directly in a Row can't be
+          // fill/left-anchored, since Row lays items out left-to-right).
+          Item {
+            visible: root.gpuState.memTotal > 0
+            width: parent.width
+            height: Style.space(6)
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+              radius: root.cornerTiny
+            }
+            Rectangle {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(Style.space(1), Math.round(parent.width * root.gpuMemPct))
+              height: parent.height
+              radius: root.cornerTiny
+              color: root.cpuData
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.cpuText
+          }
+
+          // ---- Usage history section ----
+          PanelSectionHeader {
+            text: "USAGE HISTORY"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          }
+
+          Item {
+            width: parent.width
+            height: Style.space(60)
+            clip: true
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
+            }
+            Row {
+              id: gpuHistoryBarsRow
+              anchors.fill: parent
+              spacing: Style.space(1)
+              Repeater {
+                model: root.gpuGraphHeights
+                Item {
+                  required property real modelData
+                  width: Style.space(3)
+                  height: gpuHistoryBarsRow.height
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    width: Style.space(3)
+                    height: Math.max(Style.space(1), Math.round(modelData * parent.height))
+                    color: root.cpuData
+                  }
+                }
+              }
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.cpuText
+          }
+
+          // ---- Top GPU processes (by memory) ----
+          PanelSectionHeader {
+            text: "TOP PROCESSES"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+            Repeater {
+              model: root.gpuTopProcs
+              Item {
+                required property var modelData
+                width: parent.parent.width
+                height: Style.space(22)
+                Row {
+                  width: parent.width
+                  height: parent.height
+                  Text {
+                    textFormat: Text.PlainText
+                    text: modelData.comm
+                    elide: Text.ElideRight
+                    width: Math.max(0, parent.width - Style.space(120))
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.cpuText
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    text: modelData.pid
+                    width: Style.space(56)
+                    horizontalAlignment: Text.AlignRight
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.cpuText
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+                  Item {
+                    width: Style.space(4)
+                    height: 1
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    width: Style.space(60)
+                    text: Model.formatBytes(modelData.mem)
+                    horizontalAlignment: Text.AlignRight
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.cpuText
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+                }
+              }
+            }
+            Text {
+              textFormat: Text.PlainText
+              visible: root.gpuTopProcs.length === 0
+              text: "No GPU processes reported."
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+      }
+
       // ==================== Placeholder (other stats) =================
       Column {
-        visible: !root.activeStat || root.activeStat.id !== "cpu"
+        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu")
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(8)
         PanelSectionHeader {
@@ -575,6 +994,7 @@ Panel {
 
   function refresh() {
     if (root.activeStat && root.activeStat.id === "cpu") refreshCpu()
+    else if (root.activeStat && root.activeStat.id === "gpu") refreshGpu()
   }
 
   function open() { root.controller.show() }
@@ -601,5 +1021,6 @@ Panel {
     function refresh(): void { root.refresh() }
     function openStat(id: string): void { root.openStatId(id) }
     function openCpu(): void { root.openStatId("cpu") }
+    function openGpu(): void { root.openStatId("gpu") }
   }
 }
