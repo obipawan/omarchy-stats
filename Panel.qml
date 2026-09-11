@@ -698,12 +698,14 @@ Panel {
 
         // Device line: the GPU model/family as dropdown content (the hero
         // leads with "GPU CORES" instead, matching CPU CORES). Shown in both
-        // the setup and live states; empty until a sample parses.
+        // the setup and live states; empty until a sample parses. Wraps to
+        // multiple lines (no ellipsis) so a long model name stays fully
+        // readable.
         Text {
           visible: root.gpuState.model !== ""
           textFormat: Text.PlainText
           text: root.gpuState.model
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
           width: parent.width
           color: root.cpuDim
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
