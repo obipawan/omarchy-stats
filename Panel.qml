@@ -703,6 +703,7 @@ Panel {
             text: root.gpuState.setup.title ? root.gpuState.setup.title : "GPU SETUP"
             foreground: root.cpuText
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            wrapMode: Text.Wrap
             width: parent.width
           }
           Repeater {
@@ -714,7 +715,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: modelData
-                elide: Text.ElideRight
+                wrapMode: Text.Wrap
                 width: parent.width
                 color: root.cpuDim
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -737,7 +738,7 @@ Panel {
           // (no-perm). The label says what the button will do.
           Button {
             visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
-            text: root.gpuState.status === "no-perm" ? "Unlock GPU" : "Install & set up"
+            text: root.gpuState.status === "no-perm" ? "Unlock GPU" : "Set up GPU"
             bordered: true
             foreground: root.cpuText
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
@@ -746,17 +747,6 @@ Panel {
             verticalPadding: Style.space(4)
             Layout.alignment: Qt.AlignHCenter
             onClicked: root.installGpuTool()
-          }
-          Text {
-            textFormat: Text.PlainText
-            visible: (root.gpuState.status === "no-tool" || root.gpuState.status === "no-perm") && Model.gpuToolFor(root.gpuState.vendor).pkg !== ""
-            text: root.gpuState.status === "no-perm"
-              ? "A terminal opens so you can confirm — you'll only need your password."
-              : "A terminal opens to finish the install — you may need your password."
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            Layout.alignment: Qt.AlignHCenter
           }
         }
 

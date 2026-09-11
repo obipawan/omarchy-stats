@@ -240,7 +240,7 @@ function gpuSetup(gpu) {
   }
   if (gpu.status === "no-perm") {
     return { title: "Permission needed",
-             lines: ["Your GPU is detected, but reading it needs a quick one-time unlock."] }
+             lines: ["Tap Unlock GPU below to enable live stats."] }
   }
   // status === "error": tool present but produced nothing usable
   return { title: "GPU tool error",
