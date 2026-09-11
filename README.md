@@ -20,6 +20,9 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
   - A two-line `gpu / NN%` text in the bar.
   - **Auto setup guidance**: if the tool for your GPU isn't installed, the panel
     tells you exactly what to install and how to verify — no config hunting.
+  - A one-click **"Install & verify"** button in that setup card opens your
+    default terminal, installs the detected GPU's tool, and runs the doctor, so
+    setup stays point-and-click.
 - Disk, RAM, Battery, Network — bar items present; dropdowns are placeholders
   for now (next steps).
 
@@ -38,13 +41,14 @@ Omarchy clones the repo, validates `manifest.json`, and installs it under
 omarchy bar put obi.stats --section center
 ```
 
-> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`) must be executable. Git
-> preserves the executable bit set in this repo.
+> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`) and the install helper
+> (`gpu-install.sh`) must be executable. Git preserves the executable bits set
+> in this repo.
 
 ### Manual / from source
 
 Copy the repository contents into `~/.config/omarchy/plugins/obi.stats/`
-(`chmod +x cpu.sh gpu.sh`), then `omarchy restart shell`.
+(`chmod +x cpu.sh gpu.sh gpu-install.sh`), then `omarchy restart shell`.
 
 ## Configuration
 
@@ -79,6 +83,7 @@ Panel.qml       bar-widget + dropdown UI host (QML)
 Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (aggregate, per-core, per-process)
 gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
+gpu-install.sh  one-click terminal helper behind the setup card's install button
 ```
 
 - `Panel.qml` is the bar-widget entry point *and* the dropdown host — one widget
