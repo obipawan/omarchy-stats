@@ -1,9 +1,15 @@
-# AGENTS.md
+# ⚠️️ READ THIS FIRST — do not skip
 
 Operating context for any agent (or human) working on **obi.stats**, an Omarchy
-status-bar plugin. Read this first. It documents the one dev-model caveat that
-repeatedly bites: development happens in a *live-installed* copy, and tested
-code must be **back-sourced** into this git repo.
+status-bar plugin. Start here before touching anything. The single most
+important caveat is reproduced up front so it cannot be missed:
+
+> **Development happens in the LIVE-INSTALLED copy; the repository is only the
+> source of truth.** Editing files in this repo does **not** change the running
+> shell (which loads `~/.config/omarchy/plugins/obi.stats/`), and tested code in
+> that live copy is **not** automatically reflected here. You must **develop →**
+> **test live** → **back-source into the repo → commit**. See "THE CAVEAT"
+> below — it is the whole point of this file.
 
 ## What this is
 
@@ -18,6 +24,11 @@ Panel.qml       bar widget + dropdown UI host (QML)
 Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (no mpstat/sar/htop deps)
 ```
+
+> **`cpu.sh` must stay executable (`chmod +x cpu.sh`).** The shell runs it as a
+> program; if the bit is lost (some manual copies strip it), the CPU sampler
+> silently fails and the dropdown shows stale/empty data. Git preserves the
+> `100755` mode in this repo — just don't drop it when back-sourcing.
 
 ## THE CAVEAT: two copies, and how to develop
 
