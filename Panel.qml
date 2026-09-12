@@ -207,7 +207,7 @@ Panel {
   )
   readonly property int historyBuckets: Math.max(8, Math.floor((root.contentWidthEstimate - Style.space(32)) / (Style.space(3) + Style.space(1))))
   // One real sample per column, newest anchored right, shifting left each tick.
-  readonly property var cpuGraph: Model.scrollWindow(cpuHistory, historyBuckets)
+  readonly property var cpuGraph: (root.activeStat && root.activeStat.id === "cpu") ? Model.scrollWindow(cpuHistory, historyBuckets) : []
   // Constant 0..100% axis (not max-scaled) so the timeline reads as a stable,
   // scrolling chart rather than rescaling every refresh.
   readonly property var cpuGraphHeights: Model.normalize(cpuGraph, 100)
@@ -231,7 +231,7 @@ Panel {
     100
   )
   // Same fixed 0..100% axis as CPU so both charts read consistently.
-  readonly property var gpuGraph: Model.scrollWindow(gpuHistory, historyBuckets)
+  readonly property var gpuGraph: (root.activeStat && root.activeStat.id === "gpu") ? Model.scrollWindow(gpuHistory, historyBuckets) : []
   readonly property var gpuGraphHeights: Model.normalize(gpuGraph, 100)
   // Memory fraction used, 0..1 (0 when unknown) for the memory bar.
   readonly property real gpuMemPct: gpuState.memTotal > 0 ? Math.min(1, Math.max(0, gpuState.memUsed / gpuState.memTotal)) : 0
@@ -253,7 +253,7 @@ Panel {
 
   readonly property var diskTopIo: Model.topIoRows(diskState.procs, diskTopProcesses)
   // I/O history: a column per bucket holding the read+write pair, newest right.
-  readonly property var diskIoWindow: Model.scrollIoWindow(diskHistory, historyBuckets)
+  readonly property var diskIoWindow: (root.activeStat && root.activeStat.id === "disk") ? Model.scrollIoWindow(diskHistory, historyBuckets) : []
   // Heights normalized to 0..1 against the shared read+write max so the two
   // bars of a column are comparable and the plot doesn't rescale each tick.
   readonly property var diskIoHeights: Model.normalizeIo(diskIoWindow)
@@ -289,7 +289,7 @@ Panel {
   // gauge arc and the history graph so they always agree.
   readonly property real ramUsedPct: ramState.total > 0 ? Math.max(0, Math.min(100, 100 * ramState.used / ramState.total)) : 0
   // Same fixed 0..100% axis as CPU/GPU so the graph reads consistently.
-  readonly property var ramGraph: Model.scrollWindow(ramHistory, historyBuckets)
+  readonly property var ramGraph: (root.activeStat && root.activeStat.id === "ram") ? Model.scrollWindow(ramHistory, historyBuckets) : []
   readonly property var ramGraphHeights: Model.normalize(ramGraph, 100)
   readonly property string ramMemText:
     (ramState.used >= 0 && ramState.total >= 0)
@@ -319,7 +319,7 @@ Panel {
   // battery context, capped to the configured row count.
   readonly property var batteryTopProcs: Model.topBatteryProcs(batteryState.procs, topBatteryProcesses)
   // Charge-level history graph, same fixed 0..100% axis as the other stats.
-  readonly property var batteryGraph: Model.scrollWindow(batteryHistory, historyBuckets)
+  readonly property var batteryGraph: (root.activeStat && root.activeStat.id === "battery") ? Model.scrollWindow(batteryHistory, historyBuckets) : []
   readonly property var batteryGraphHeights: Model.normalize(batteryGraph, 100)
   // Charge polarity drives the bar time shown: charging shows time-to-full,
   // discharging time-to-empty, full/idle shows the dash.
@@ -348,7 +348,7 @@ Panel {
   // Top processes by network (sum of up+down, TCP-attributed).
   readonly property var netTopProcs: Model.topNetProcs(netState.procs, networkTopProcesses)
   // Throughput history, one column per bucket holding the down/up pair.
-  readonly property var netGraph: Model.scrollNetWindow(netHistory, historyBuckets)
+  readonly property var netGraph: (root.activeStat && root.activeStat.id === "network") ? Model.scrollNetWindow(netHistory, historyBuckets) : []
   // Heights normalized to 0..1 against the shared down+up max so the two bars
   // of a column are comparable and the plot doesn't rescale each tick.
   readonly property var netGraphHeights: Model.normalizeNet(netGraph)
@@ -735,10 +735,13 @@ Panel {
   function openStat(stat, button) {
     root.activeStat = stat
     root.activeButton = button || root.statButtons[stat.id]
-    // One combined sampler feeds every stat; kick it so the dropdown opens
-    // with a fresh sample (the on-demand per-process tables come from
+    // Skip a redundant full-sample kick when the last combined sample is still
+    // fresh — the always-on timer keeps bar + dropdown data current, so opening
+    // right after a tick need not re-run all six samplers. Kick only if the
+    // data is getting stale (on-demand per-process tables still update via
     // syncProcsPolling).
-    root.sampleRefresh()
+    var now = Date.now() / 1000
+    if (now - root.lastSampleAt >= Math.max(1.0, root.refreshSeconds * 0.5)) root.sampleRefresh()
     root.syncProcsPolling()
     root.controller.show()
   }
@@ -757,6 +760,9 @@ Panel {
   // drives this. `procs.sh` (the on-demand per-process tables) still runs only
   // while a relevant dropdown is open (see syncProcsPolling).
   property bool samplePolling: false
+  // Wall-clock (s) of the last combined sample that completed; used to avoid a
+  // redundant full-sample kick when a dropdown opens shortly after a tick.
+  property real lastSampleAt: 0
   readonly property string sampleWindow:
     String(Math.max(0.3, Math.round(root.refreshSeconds * 0.3 * 100) / 100))
   function sampleRefresh() {
@@ -779,6 +785,7 @@ Panel {
 
   function onSampleFinished(raw) {
     root.samplePolling = false
+    root.lastSampleAt = Date.now() / 1000
     var parts = String(raw || "").split(/^___([a-z]+)___/m)
     for (var i = 1; i + 1 < parts.length; i += 2) {
       var stat = parts[i]
