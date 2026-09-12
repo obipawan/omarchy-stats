@@ -734,19 +734,25 @@ Panel {
           width: parent.width
           spacing: Style.space(4)
           Repeater {
-            model: root.cpuTopProcs
+            // Always render exactly `topProcesses` row slots so the dropdown
+            // height stays fixed no matter how many processes are running.
+            // Ranks past the live process count stay blank but still hold their
+            // row, so the panel never resizes as processes appear/disappear.
+            model: (function() { var a = []; for (var i = 0; i < root.topProcesses; i++) a.push(i); return a })()
             Item {
-              required property var modelData
+              required property int modelData
+              readonly property var info: root.cpuTopProcs[modelData]
               width: parent.parent.width
               height: Style.space(22)
               Row {
+                visible: modelData < root.cpuTopProcs.length
                 width: parent.width
                 height: parent.height
 
                 // Name: fills the space left over by pinned pid + pct columns.
                 Text {
                   textFormat: Text.PlainText
-                  text: modelData.comm
+                  text: parent.info ? parent.info.comm : ""
                   elide: Text.ElideRight
                   width: Math.max(0, parent.width - Style.space(120))
                   anchors.verticalCenter: parent.verticalCenter
@@ -756,7 +762,7 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: modelData.pid
+                  text: parent.info ? parent.info.pid : ""
                   width: Style.space(56)
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
@@ -771,24 +777,16 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: Style.space(60)
-                  text: Model.formatPct(modelData.pct)
+                  text: parent.info ? Model.formatPct(parent.info.pct) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
-                  color: root.usageColor(modelData.pct)
+                  color: root.usageColor(parent.info ? parent.info.pct : 0)
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.body
                   font.bold: true
                 }
               }
             }
-          }
-          Text {
-            textFormat: Text.PlainText
-            visible: root.cpuTopProcs.length === 0
-            text: "Collecting…"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
           }
         }
       }
@@ -1239,19 +1237,25 @@ Panel {
           width: parent.width
           spacing: Style.space(4)
           Repeater {
-            model: root.diskTopIo
+            // Always render exactly `diskTopProcesses` row slots so the dropdown
+            // height stays fixed no matter how many processes are doing I/O.
+            // Ranks past the live count stay blank but still hold their row, so
+            // the panel never resizes as I/O processes appear/disappear.
+            model: (function() { var a = []; for (var i = 0; i < root.diskTopProcesses; i++) a.push(i); return a })()
             Item {
-              required property var modelData
+              required property int modelData
+              readonly property var info: root.diskTopIo[modelData]
               width: parent.parent.width
               height: Style.space(22)
               Row {
+                visible: modelData < root.diskTopIo.length
                 width: parent.width
                 height: parent.height
 
                 // Name: fills the space left over by pinned pid + read + write.
                 Text {
                   textFormat: Text.PlainText
-                  text: modelData.comm
+                  text: parent.info ? parent.info.comm : ""
                   elide: Text.ElideRight
                   width: Math.max(0, parent.width - Style.space(180))
                   anchors.verticalCenter: parent.verticalCenter
@@ -1261,7 +1265,7 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: modelData.pid
+                  text: parent.info ? parent.info.pid : ""
                   width: Style.space(52)
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
@@ -1276,7 +1280,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: Style.space(60)
-                  text: Model.formatRate(modelData.read)
+                  text: parent.info ? Model.formatRate(parent.info.read) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
                   color: root.cpuText
@@ -1290,7 +1294,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: Style.space(56)
-                  text: Model.formatRate(modelData.write)
+                  text: parent.info ? Model.formatRate(parent.info.write) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
                   color: root.cpuData

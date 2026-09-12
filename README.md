@@ -141,6 +141,9 @@ matches the install directory, which keeps `cpu.sh` discoverable.
   sample on the left and appends the newest on the right.
 - On near-monochrome themes the usage-color tiers are intentionally subtle
   (theme `foreground`/`accent`/`urgent` are close together).
+- Each dropdown has a **fixed height**: the top-processes lists always reserve
+  `topProcesses` (CPU) / `diskTopProcesses` (I/O) rows, so the panel doesn't
+  resize as processes appear and disappear. Empty ranks are simply blank.
 
 ## License
 
