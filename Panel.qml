@@ -389,7 +389,7 @@ Panel {
   // Network bar: a two-line stack of the current down/up rates (no label),
   // so it needs enough width for e.g. "27KB/s" and "1.5MB/s".
   readonly property int netBarHeight: Style.bar.sizeHorizontal
-  readonly property int netBarWidth: Style.space(58)
+  readonly property int netBarWidth: Style.space(66)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -582,31 +582,18 @@ Panel {
         }
       }
 
-      // Network: two lines of the current rates, download over upload. Same
-      // font and no threshold tint (the user asked for plain rates); a small
-      // down/up arrow distinguishes the direction at a glance.
+      // Network: two lines of the current rates, download over upload. Same font
+      // and no threshold tint. Each line pins its direction arrow to the left
+      // edge and right-aligns the number, so a value changing width never
+      // nudges the glyph — the arrows stay fixed and the numbers share a
+      // right edge.
       Column {
         visible: stat.id === "network"
+        width: root.netBarWidth - Style.space(12)
         spacing: Style.space(0)
         Layout.alignment: Qt.AlignHCenter
-        Text {
-          textFormat: Text.PlainText
-          horizontalAlignment: Text.AlignHCenter
-          text: "▼ " + root.netDownText
-          color: root.cpuText
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(7, Style.font.caption - 2)
-          font.bold: true
-        }
-        Text {
-          textFormat: Text.PlainText
-          horizontalAlignment: Text.AlignHCenter
-          text: "▲ " + root.netUpText
-          color: root.cpuText
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(7, Style.font.caption - 2)
-          font.bold: true
-        }
+        NetRateRow { arrow: "▼"; value: root.netDownText }
+        NetRateRow { arrow: "▲"; value: root.netUpText }
       }
 
       // Disk: two lines. The F:/U: prefix stays theme text; only the value is
@@ -657,6 +644,36 @@ Panel {
           font.bold: true
         }
       }
+    }
+  }
+
+  // A single network bar line: direction arrow pinned to the left edge with a
+  // right-aligned rate filling the rest, so the glyph never shifts as the
+  // value changes width and both lines share the same right edge.
+  component NetRateRow: Row {
+    required property string arrow
+    required property string value
+    width: parent.width
+    Text {
+      textFormat: Text.PlainText
+      text: arrow
+      color: root.cpuText
+      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.pixelSize: Math.max(8, Style.font.caption - 1)
+      font.bold: true
+    }
+    Item {
+      Layout.fillWidth: true
+      height: 1
+    }
+    Text {
+      textFormat: Text.PlainText
+      horizontalAlignment: Text.AlignRight
+      text: value
+      color: root.cpuText
+      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.pixelSize: Math.max(8, Style.font.caption - 1)
+      font.bold: true
     }
   }
 
@@ -1022,9 +1039,7 @@ Panel {
     if (root.activeStat.id === "ram")
       return root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
     if (root.activeStat.id === "battery") return ""
-    if (root.activeStat.id === "network")
-      return "▼ " + root.netDownText + "  ▲ " + root.netUpText +
-             (root.netState.iface !== "" ? "  ·  " + root.netInterfaceText : "")
+    if (root.activeStat.id === "network") return ""
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
 
@@ -2689,8 +2704,10 @@ Panel {
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(10)
 
-        // Headline: caption + current download rate, upload rate on the right,
-        // like the other stats' TOTAL/USAGE row.
+        // Headline: caption + current download/upload rates. Both rates share
+        // the same heading font, and each arrow is pinned (down after the
+        // caption, up against the right edge) with a fixed-width right-aligned
+        // value, so neither glyph shifts as the numbers change.
         Row {
           width: parent.width
           spacing: Style.space(10)
@@ -2706,8 +2723,17 @@ Panel {
           }
           Text {
             textFormat: Text.PlainText
-            anchors.baseline: netTrafficLabel.baseline
-            text: "▼ " + root.netDownText
+            text: "▼"
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignRight
+            width: Style.space(64)
+            text: root.netDownText
             color: root.cpuText
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.heading
@@ -2719,10 +2745,20 @@ Panel {
           }
           Text {
             textFormat: Text.PlainText
-            text: "▲ " + root.netUpText
+            text: "▲"
             color: root.cpuText
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.body
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignRight
+            width: Style.space(64)
+            text: root.netUpText
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
             font.bold: true
           }
         }
@@ -2897,7 +2933,7 @@ Panel {
                   textFormat: Text.PlainText
                   text: info ? info.comm : ""
                   elide: Text.ElideRight
-                  width: Math.max(0, parent.width - Style.space(180))
+                  width: Math.max(0, parent.width - Style.space(210))
                   anchors.verticalCenter: parent.verticalCenter
                   color: root.cpuText
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -2914,26 +2950,30 @@ Panel {
                   font.pixelSize: Style.font.body
                 }
                 Item {
-                  width: Style.space(4)
+                  width: Style.space(6)
                   height: 1
                 }
+                // Upload and download rate columns share the same bold accent
+                // styling; each is right-aligned with a fixed width so large
+                // values have room and the two columns always line up.
                 Text {
                   textFormat: Text.PlainText
-                  width: Style.space(56)
+                  width: Style.space(64)
                   text: info ? Model.formatNetRate(info.up) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
-                  color: root.cpuText
+                  color: root.cpuData
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.body
+                  font.bold: true
                 }
                 Item {
-                  width: Style.space(4)
+                  width: Style.space(6)
                   height: 1
                 }
                 Text {
                   textFormat: Text.PlainText
-                  width: Style.space(60)
+                  width: Style.space(76)
                   text: info ? Model.formatNetRate(info.down) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
@@ -2945,19 +2985,6 @@ Panel {
               }
             }
           }
-        }
-
-        // Per-process rates come from TCP socket byte counters (ss -tinp), so
-        // they cover TCP traffic only — UDP/QUIC shows up in the aggregate
-        // down/up but can't be split per process without root.
-        Text {
-          width: parent.width
-          wrapMode: Text.Wrap
-          textFormat: Text.PlainText
-          text: "Per-process rates are TCP-attributed (UDP/QUIC counted in the totals above, not split here)."
-          color: root.cpuDim
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
         }
       }
 
