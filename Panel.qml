@@ -2655,7 +2655,9 @@ Panel {
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 text: root.batteryIconGlyph()
-                color: root.batteryColor(root.batteryState.pct)
+                // Same rule as the bar icon: while charging, always calm,
+                // regardless of charge level.
+                color: root.batteryState.charging ? root.cpuText : root.batteryColor(root.batteryState.pct)
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.space(84)
                 font.bold: true
