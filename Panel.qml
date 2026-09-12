@@ -367,7 +367,7 @@ Panel {
 
   Row {
     id: statRow
-    spacing: Style.space(5)
+    spacing: Style.space(16)
 
     Repeater {
       model: root.defs
