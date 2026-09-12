@@ -271,19 +271,44 @@ print_doctor() {
 }
 
 # ---- driver -------------------------------------------------------------
-vendor=$(detect_vendor)
+# The GPU vendor + model are invariant on a running system, so cache them and
+# only re-run `lspci` detection every TTL (default 5 min) instead of on every
+# sample — `lspci` (spawned twice per tick) was a large chunk of per-tick cost.
+# `--doctor` / `--vendor` always re-detect so setup guidance is current.
+GPU_FACTS_CACHE="${GPU_FACTS_CACHE:-${XDG_RUNTIME_DIR:-/tmp}/obi-stats-gpu-facts}"
+GPU_CACHE_TTL="${GPU_CACHE_TTL:-300}"
+
+load_cached() {
+  vendor=""; model=""
+  [ -r "$GPU_FACTS_CACHE" ] || return 1
+  local now age
+  now=$(date +%s)
+  age=$(( now - $(stat -c %Y "$GPU_FACTS_CACHE" 2>/dev/null || echo 0) ))
+  [ "$age" -ge 0 ] && [ "$age" -le "$GPU_CACHE_TTL" ] || return 1
+  vendor=$(awk -F'	' '$1=="vendor"{print $2; exit}' "$GPU_FACTS_CACHE" 2>/dev/null)
+  model=$(awk -F'	' '$1=="model"{print $2; exit}' "$GPU_FACTS_CACHE" 2>/dev/null)
+  [ -n "$vendor" ] && [ -n "$model" ]
+}
+detect_and_cache() {
+  vendor=$(detect_vendor)
+  model=$(model_from_lspci || echo Unknown)
+  mkdir -p "$(dirname "$GPU_FACTS_CACHE")" 2>/dev/null
+  printf "vendor	%s\nmodel	%s\n" "$vendor" "$model" > "$GPU_FACTS_CACHE"
+}
 
 if [ "$1" = "--doctor" ]; then
-  print_doctor "$vendor"
+  print_doctor "$(detect_vendor)"
   exit 0
 fi
 if [ "$1" = "--vendor" ]; then
-  echo "$vendor"
+  echo "$(detect_vendor)"
   exit 0
 fi
 
+load_cached || detect_and_cache
+
 echo "vendor	$vendor"
-echo "model	$(model_from_lspci || echo Unknown)"
+echo "model	$model"
 
 case "$vendor" in
   nvidia)

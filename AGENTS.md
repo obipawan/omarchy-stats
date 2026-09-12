@@ -31,10 +31,12 @@ battery.sh      /sys/class/power_supply + per-process drain sampler (drain rows 
 procs.sh        consolidated per-process sampler (stat+io+status, one pass) — feeds the
                 CPU / RAM / disk / battery "top processes" dropdown tables; runs on-demand
                 while one of those dropdowns is open
+sample.sh       combined orchestrator: runs cpu/net/disk/ram/battery/gpu in parallel each
+                tick and emits section-marked output for the single panel sampler
 ```
 
-> **`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`, `battery.sh`, `procs.sh` must stay executable
-> (`chmod +x`).** The shell runs them as programs; if the bit is lost (some
+> **`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`, `battery.sh`, `procs.sh`, `sample.sh` must stay
+> executable (`chmod +x`).** The shell runs them as programs; if the bit is lost (some
 > manual copies strip it), the sampler silently fails and the dropdown shows
 > stale/empty data. Git preserves the `100755` mode in this repo — just don't
 > drop them when back-sourcing.
@@ -112,11 +114,12 @@ sync script if iteration is heavy.
 - **Settings via widget entry:** per-widget config is read from the bar layout
   entry in `~/.config/omarchy/shell.json` using `setting("key", default)` and set
   with `omarchy bar set obi.stats <key> <value>`. Existing keys:
-  `refreshSeconds` (2), `historyMinutes` (60), `topProcesses` (8),
-  `calmLimit` (30), `mildLimit` (60), plus per-stat overrides
+  `refreshSeconds` (5), `historyMinutes` (60), `topProcesses` (8),
+  `calmLimit` (30), `mildLimit` (60) and battery tints
+  (`batteryAlarmPct` 20, `batteryMildPct` 60). All stats now share ONE cadence
+  (`refreshSeconds`) — the old per-stat refresh keys
   (`cpuRefreshSeconds`, `gpuRefreshSeconds`, `fileioRefreshSeconds`,
-  `ramRefreshSeconds`, `batteryRefreshSeconds`) and battery tints
-  (`batteryAlarmPct` 20, `batteryMildPct` 60).
+  `ramRefreshSeconds`, `batteryRefreshSeconds`) are no longer read.
 - **Theme-cohesive colors:** CPU tint maps to semantic roles
   `foreground` / `accent` / `urgent` from `colors.toml`, so it adapts to any theme.
 - **Pure logic stays in Model.js** as node-testable functions (e.g.

@@ -154,10 +154,13 @@ read_dev() {
   awk -v i="$iface" '$1 == i":" { print $2, $10 }' /proc/net/dev 2>/dev/null
 }
 d1=$(read_dev)
-s1=$(ss -Htinp 2>/dev/null)
+# The `ss` per-process / per-socket data feeds ONLY the network dropdown's
+# "top processes" table. Skip it entirely (a small netlink socket dump each
+# tick) unless NET_DO_PROC=1, which the panel sets while the dropdown is open.
+if [ "${NET_DO_PROC:-0}" = "1" ]; then s1=$(ss -Htinp 2>/dev/null); else s1=""; fi
 sleep "$WINDOW"
 d2=$(read_dev)
-s2=$(ss -Htinp 2>/dev/null)
+if [ "${NET_DO_PROC:-0}" = "1" ]; then s2=$(ss -Htinp 2>/dev/null); else s2=""; fi
 
 r1=${d1% *}; t1=${d1#* }
 r2=${d2% *}; t2=${d2#* }
@@ -172,6 +175,7 @@ BEGIN {
          dr / 1024 / win, du / 1024 / win, r2, t2
 }'
 
+if [ "${NET_DO_PROC:-0}" = "1" ]; then
 # --- per-process rates via ss -tinp (TCP sockets, deltad over window) ------
 # ss -tinp emits, per socket: a summary line (with `pid=N` in users:(...)) then
 # an indented info line carrying bytes_sent / bytes_received. Map each info
@@ -234,3 +238,4 @@ BEGIN {
   }
 }
 '
+fi

@@ -82,6 +82,7 @@ Panel {
   readonly property string diskScript: root.pluginDir + "/disk.sh"
   readonly property string ramScript: root.pluginDir + "/ram.sh"
   readonly property string batteryScript: root.pluginDir + "/battery.sh"
+  readonly property string sampleScript: root.pluginDir + "/sample.sh"
   readonly property string procsScript: root.pluginDir + "/procs.sh"
   readonly property string netScript: root.pluginDir + "/net.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
@@ -734,12 +735,10 @@ Panel {
   function openStat(stat, button) {
     root.activeStat = stat
     root.activeButton = button || root.statButtons[stat.id]
-    if (stat.id === "cpu") refreshCpu()
-    else if (stat.id === "gpu") refreshGpu()
-    else if (stat.id === "disk") refreshDisk()
-    else if (stat.id === "ram") refreshRam()
-    else if (stat.id === "battery") refreshBattery()
-    else if (stat.id === "network") refreshNetwork()
+    // One combined sampler feeds every stat; kick it so the dropdown opens
+    // with a fresh sample (the on-demand per-process tables come from
+    // syncProcsPolling).
+    root.sampleRefresh()
     root.syncProcsPolling()
     root.controller.show()
   }
@@ -749,6 +748,98 @@ Panel {
     if (!stat) return false
     root.openStat(stat, null)
     return true
+  }
+
+  // ============================ Combined sampling ======================
+  // One sampler (sample.sh) fetches every always-on stat in a single spawn,
+  // running the six samplers in parallel and emitting section-marked output.
+  // The per-stat timers below are disabled; a single refreshSeconds cadence
+  // drives this. `procs.sh` (the on-demand per-process tables) still runs only
+  // while a relevant dropdown is open (see syncProcsPolling).
+  property bool samplePolling: false
+  readonly property string sampleWindow:
+    String(Math.max(0.3, Math.round(root.refreshSeconds * 0.3 * 100) / 100))
+  function sampleRefresh() {
+    if (root.samplePolling) return
+    root.samplePolling = true
+    // Only run the net `ss` per-socket sampling while the network dropdown is
+    // open; the bar's aggregate rate needs only the cheap /proc/net/dev read.
+    var doNet = (root.activeStat && root.activeStat.id === "network") ? "1" : "0"
+    sampleProc.command = [root.sampleScript, root.sampleWindow, doNet]
+    sampleProc.running = true
+  }
+
+  Process {
+    id: sampleProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onSampleFinished(text)
+    }
+  }
+
+  function onSampleFinished(raw) {
+    root.samplePolling = false
+    var parts = String(raw || "").split(/^___([a-z]+)___/m)
+    for (var i = 1; i + 1 < parts.length; i += 2) {
+      var stat = parts[i]
+      var content = parts[i + 1]
+      if (stat === "cpu") root.applyCpu(Model.parseCpuOutput(content))
+      else if (stat === "gpu") root.applyGpu(Model.parseGpuOutput(content))
+      else if (stat === "disk") root.applyDisk(Model.parseDiskOutput(content))
+      else if (stat === "ram") root.applyRam(Model.parseRamOutput(content))
+      else if (stat === "battery") root.applyBattery(Model.parseBatteryOutput(content))
+      else if (stat === "net") root.applyNet(Model.parseNetworkOutput(content))
+    }
+  }
+
+  // Apply a parsed stat to its state + history (kept procs arrays intact).
+  function applyCpu(parsed) {
+    root.cpuState = Object.assign(parsed, { procs: root.cpuState.procs })
+    var now = Date.now() / 1000
+    root.cpuHistory = Model.appendHistory(root.cpuHistory, now, parsed.total, root.historySeconds)
+  }
+  function applyGpu(parsed) {
+    root.gpuState = parsed
+    var now = Date.now() / 1000
+    if (parsed.ready) root.gpuHistory = Model.appendHistory(root.gpuHistory, now, parsed.total, root.historySeconds)
+  }
+  function applyDisk(parsed) {
+    root.diskState = Object.assign(parsed, { procs: root.diskState.procs })
+    var now = Date.now() / 1000
+    if (parsed.ready) root.diskHistory = Model.appendIoHistory(root.diskHistory, now, parsed.read, parsed.write, root.historySeconds)
+  }
+  function applyRam(parsed) {
+    root.ramState = Object.assign(parsed, { procs: root.ramState.procs })
+    var now = Date.now() / 1000
+    if (parsed.ready) root.ramHistory = Model.appendHistory(root.ramHistory, now, parsed.used / parsed.total * 100, root.historySeconds)
+  }
+  function applyBattery(parsed) {
+    root.batteryState = Object.assign(parsed, { procs: root.batteryState.procs })
+    var now = Date.now() / 1000
+    if (parsed.ready) root.batteryHistory = Model.appendHistory(root.batteryHistory, now, parsed.pct, root.historySeconds)
+  }
+  function applyNet(parsed) {
+    root.netState = parsed
+    var now = Date.now() / 1000
+    if (parsed.ready) root.netHistory = Model.appendNetHistory(root.netHistory, now, parsed.down, parsed.up, root.historySeconds)
+  }
+
+  Timer {
+    id: sampleTimer
+    interval: root.refreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: root.sampleRefresh()
+  }
+
+  // Populate the bar promptly at startup (the main timer first fires after a
+  // full refreshSeconds).
+  Timer {
+    id: sampleStartup
+    interval: 150
+    repeat: false
+    running: true
+    onTriggered: root.sampleRefresh()
   }
 
   // ============================ CPU polling ==============================
@@ -787,7 +878,7 @@ Panel {
     id: cpuPollTimer
     interval: root.cpuRefreshSeconds * 1000
     repeat: true
-    running: true
+    running: false
     onTriggered: { if (!root.cpuPolling) root.refreshCpu() }
   }
 
@@ -826,7 +917,7 @@ Panel {
     id: gpuPollTimer
     interval: root.gpuRefreshSeconds * 1000
     repeat: true
-    running: true
+    running: false
     onTriggered: { if (!root.gpuPolling) root.refreshGpu() }
   }
 
@@ -847,11 +938,10 @@ Panel {
       "-e", "bash", root.gpuInstallScript
     ]
     gpuInstallProc.running = true
-    // Refresh shortly after so the panel reflects the new tool status once
-    // the terminal work is done (install + doctor). Polling already covers
-    // this; the extra kick just makes the setup card feel responsive.
-    gpuPollTimer.restart()
-    refreshGpu()
+    // Sample shortly after so the panel reflects the new tool status once
+    // the terminal work is done (install + doctor). The main sampler cadence
+    // already covers this; the extra kick just keeps the setup card snappy.
+    root.sampleRefresh()
   }
 
   Process {
@@ -892,7 +982,7 @@ Panel {
     id: diskPollTimer
     interval: root.fileioRefreshSeconds * 1000
     repeat: true
-    running: true
+    running: false
     onTriggered: { if (!root.diskPolling) root.refreshDisk() }
   }
 
@@ -928,7 +1018,7 @@ Panel {
     id: ramPollTimer
     interval: root.ramRefreshSeconds * 1000
     repeat: true
-    running: true
+    running: false
     onTriggered: { if (!root.ramPolling) root.refreshRam() }
   }
 
@@ -968,7 +1058,7 @@ Panel {
     id: batteryPollTimer
     interval: root.batteryRefreshSeconds * 1000
     repeat: true
-    running: true
+    running: false
     onTriggered: { if (!root.batteryPolling) root.refreshBattery() }
   }
 
@@ -1007,7 +1097,7 @@ Panel {
     id: netPollTimer
     interval: root.networkRefreshSeconds * 1000
     repeat: true
-    running: true
+    running: false
     onTriggered: { if (!root.netPolling) root.refreshNetwork() }
   }
 
@@ -1020,10 +1110,6 @@ Panel {
   // cheap — no sampler rescans the whole /proc process tree every tick.
   property var procRows: []
   property bool procsPolling: false
-  readonly property var procsCadenceKeys: ({
-    cpu: "cpuRefreshSeconds", ram: "ramRefreshSeconds",
-    disk: "fileioRefreshSeconds", battery: "batteryRefreshSeconds"
-  })
 
   function refreshProcs() {
     if (root.procsPolling) return
@@ -1062,8 +1148,7 @@ Panel {
       procsPollTimer.stop()
       return
     }
-    var key = String(root.procsCadenceKeys[s.id] || "refreshSeconds")
-    var ms = Math.max(300, (parseInt(root[key], 10) || root.refreshSeconds) * 1000)
+    var ms = Math.max(300, root.refreshSeconds * 1000)
     if (procsPollTimer.running && procsPollTimer.interval === ms) {
       root.refreshProcs()   // same cadence, just re-kick so the view is fresh
       return
@@ -3092,12 +3177,8 @@ Panel {
   }
 
   function refresh() {
-    if (root.activeStat && root.activeStat.id === "cpu") refreshCpu()
-    else if (root.activeStat && root.activeStat.id === "gpu") refreshGpu()
-    else if (root.activeStat && root.activeStat.id === "disk") refreshDisk()
-    else if (root.activeStat && root.activeStat.id === "ram") refreshRam()
-    else if (root.activeStat && root.activeStat.id === "battery") refreshBattery()
-    else if (root.activeStat && root.activeStat.id === "network") refreshNetwork()
+    root.sampleRefresh()
+    if (root.activeStat) root.syncProcsPolling()
   }
 
   function open() { root.controller.show() }
