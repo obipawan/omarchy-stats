@@ -82,6 +82,7 @@ Panel {
   readonly property string diskScript: root.pluginDir + "/disk.sh"
   readonly property string ramScript: root.pluginDir + "/ram.sh"
   readonly property string batteryScript: root.pluginDir + "/battery.sh"
+  readonly property string procsScript: root.pluginDir + "/procs.sh"
   readonly property string netScript: root.pluginDir + "/net.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
   // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
@@ -739,6 +740,7 @@ Panel {
     else if (stat.id === "ram") refreshRam()
     else if (stat.id === "battery") refreshBattery()
     else if (stat.id === "network") refreshNetwork()
+    root.syncProcsPolling()
     root.controller.show()
   }
 
@@ -774,7 +776,9 @@ Panel {
   function onCpuFinished(raw) {
     root.cpuPolling = false
     var parsed = Model.parseCpuOutput(raw)
-    root.cpuState = parsed
+    // Keep whatever the shared procs sampler planted; cpu.sh now only emits the
+    // aggregate + per-core (no per-process rows).
+    root.cpuState = Object.assign(parsed, { procs: root.cpuState.procs })
     var now = Date.now() / 1000
     root.cpuHistory = Model.appendHistory(root.cpuHistory, now, parsed.total, root.historySeconds)
   }
@@ -878,7 +882,7 @@ Panel {
   function onDiskFinished(raw) {
     root.diskPolling = false
     var parsed = Model.parseDiskOutput(raw)
-    root.diskState = parsed
+    root.diskState = Object.assign(parsed, { procs: root.diskState.procs })
     var now = Date.now() / 1000
     // Only a live sample feeds the I/O history graph.
     if (parsed.ready) root.diskHistory = Model.appendIoHistory(root.diskHistory, now, parsed.read, parsed.write, root.historySeconds)
@@ -914,7 +918,7 @@ Panel {
   function onRamFinished(raw) {
     root.ramPolling = false
     var parsed = Model.parseRamOutput(raw)
-    root.ramState = parsed
+    root.ramState = Object.assign(parsed, { procs: root.ramState.procs })
     var now = Date.now() / 1000
     // Only a live sample feeds the history graph.
     if (parsed.ready) root.ramHistory = Model.appendHistory(root.ramHistory, now, parsed.used / parsed.total * 100, root.historySeconds)
@@ -954,7 +958,7 @@ Panel {
   function onBatteryFinished(raw) {
     root.batteryPolling = false
     var parsed = Model.parseBatteryOutput(raw)
-    root.batteryState = parsed
+    root.batteryState = Object.assign(parsed, { procs: root.batteryState.procs })
     var now = Date.now() / 1000
     // Only a live sample feeds the charge history graph.
     if (parsed.ready) root.batteryHistory = Model.appendHistory(root.batteryHistory, now, parsed.pct, root.historySeconds)
@@ -1005,6 +1009,77 @@ Panel {
     repeat: true
     running: true
     onTriggered: { if (!root.netPolling) root.refreshNetwork() }
+  }
+
+  // ==================== Shared per-process polling ======================
+  // The CPU, RAM, disk and battery dropdown "top processes" tables all read the
+  // same per-process data, so they share ONE sampler (procs.sh) that reads each
+  // process once per pass (stat + io + status) and this block fans it out into
+  // the four *State.procs lists. It only runs while one of those dropdowns is
+  // open (at that open stat's refresh cadence), so the always-on bar polls stay
+  // cheap — no sampler rescans the whole /proc process tree every tick.
+  property var procRows: []
+  property bool procsPolling: false
+  readonly property var procsCadenceKeys: ({
+    cpu: "cpuRefreshSeconds", ram: "ramRefreshSeconds",
+    disk: "fileioRefreshSeconds", battery: "batteryRefreshSeconds"
+  })
+
+  function refreshProcs() {
+    if (root.procsPolling) return
+    root.procsPolling = true
+    // Sample window is a fraction of the poll interval so each run finishes
+    // inside one tick, same rule as the other samplers.
+    procsProc.command = [root.procsScript, "0.5"]
+    procsProc.running = true
+  }
+
+  Process {
+    id: procsProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onProcsFinished(text)
+    }
+  }
+
+  function onProcsFinished(raw) {
+    root.procsPolling = false
+    var rows = Model.parseProcRows(raw)
+    root.procRows = rows
+    root.cpuState.procs = Model.procRowsByCpu(rows)
+    root.batteryState.procs = Model.procRowsByCpu(rows)   // drain proxy = top CPU
+    root.diskState.procs = Model.procRowsByIo(rows)
+    root.ramState.procs = Model.procRowsByRss(rows)
+  }
+
+  // Start/stop/re-interval the shared poller to track the currently open stat.
+  // Only active while a stat with a per-process table is open; polls at that
+  // stat's own refreshSeconds (so per-stat configs stay respected).
+  function syncProcsPolling() {
+    var s = root.activeStat
+    var needs = s && (s.id === "cpu" || s.id === "ram" || s.id === "disk" || s.id === "battery")
+    if (!needs) {
+      procsPollTimer.stop()
+      return
+    }
+    var key = String(root.procsCadenceKeys[s.id] || "refreshSeconds")
+    var ms = Math.max(300, (parseInt(root[key], 10) || root.refreshSeconds) * 1000)
+    if (procsPollTimer.running && procsPollTimer.interval === ms) {
+      root.refreshProcs()   // same cadence, just re-kick so the view is fresh
+      return
+    }
+    procsPollTimer.stop()
+    procsPollTimer.interval = ms
+    procsPollTimer.start()
+    root.refreshProcs()
+  }
+
+  Timer {
+    id: procsPollTimer
+    interval: 2000
+    repeat: true
+    running: false
+    onTriggered: root.refreshProcs()
   }
 
   // Hero text: for CPU the title is "CPU CORES"; for GPU it's the matching
@@ -3026,7 +3101,7 @@ Panel {
   }
 
   function open() { root.controller.show() }
-  function close() { root.controller.hide() }
+  function close() { procsPollTimer.stop(); root.controller.hide() }
 
   // On close the panel fades out over ~140ms while still mapped, so we must
   // NOT null activeStat/activeButton here: nulling activeStat would repaint the

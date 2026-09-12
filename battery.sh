@@ -7,9 +7,7 @@
 # temperature. When the upower daemon is reachable, it prefers upower's filtered
 # Percentage (energy-based, matching what omarchy shows) and TimeToFull/TimeToEmpty
 # (far more stable than a single instantaneous /sys power sample) — falling back to
-# our own /sys estimates otherwise. It also samples per-process CPU usage (the
-# dominant battery drain) so the panel can list the top consumers. Everything comes
-# back tab-separated:
+# our own /sys estimates otherwise. Everything comes back tab-separated:
 #
 #   present\t<0|1>               a battery exists
 #   state\t<charging|discharging|full|not-charging|unknown>
@@ -27,20 +25,19 @@
 #   timeToFull\t<seconds>        seconds until full (0 when not charging)
 #   timeToEmpty\t<seconds>       seconds until empty (0 when not discharging)
 #   model\t<string>              battery model name (optional)
-#   proc\t<pid>\t<pct>\t<comm>   top CPU processes (drain proxy), desc
 #
-# Data sources:
-#   - /sys/class/power_supply/BAT*/* for the battery itself
-#   - /sys/class/power_supply/{AC*,ADP*}/online for AC presence
-#   - /sys/class/power_supply/<bat>/power if present, else voltage*current
-#   - /proc/stat + /proc/<pid>/stat (windowed) for top CPU consumers
+# NOTE: the "top processes" (drain proxy listing) is no longer produced here. It
+# is the top-CPU list from the consolidated procs.sh sampler — Linux exposes no
+# per-process power meter, so CPU is the honest drain proxy. Dropping the per-CPU
+# scan means this always-on poll only reads the small /sys + upower values every
+# tick instead of rescanning the whole process tree.
 #
 # Usage: battery.sh [window-seconds] [top-n]
-#   window-seconds  sample window for the process-rate computation (default 0.5)
-#   top-n           rows of per-process CPU to print (default 8)
+#   (window/top-n retained for backward-compatible calls; per-process rows now
+#    come from procs.sh and these args are ignored)
 
-WINDOW="${1:-0.5}"
-TOP_N="${2:-8}"
+WINDOW="${1:-0.5}"   # kept for CLI compatibility (unused)
+TOP_N="${2:-8}"      # kept for CLI compatibility (unused)
 [ "$TOP_N" -lt 1 ] 2>/dev/null && TOP_N=8
 
 # --- discover battery + AC --------------------------------------------------
@@ -176,49 +173,3 @@ if command -v busctl >/dev/null 2>&1 && [ -n "$BAT" ]; then
     printf "pct\t%.0f\n" "$up_pct"
   fi
 fi
-
-# --- top CPU consumers (drain proxy) ----------------------------------------
-# CPU activity is the dominant battery drain on this class of device and is the
-# only honest per-process figure Linux exposes (there is no per-process power
-# meter in /proc). Reuse the same two-pass /proc/<pid>/stat sampling as cpu.sh.
-snapshot_procs() {
-  cat /proc/[0-9]*/stat 2>/dev/null | awk '{
-    split($0, a, ") ")
-    n = split(a[2], b, " ")
-    print $1, b[12], b[13]
-  }'
-}
-
-p1=$(snapshot_procs)
-sleep "$WINDOW"
-p2=$(snapshot_procs)
-
-awk -v p1="$p1" -v p2="$p2" -v clk=100 -v win="$WINDOW" -v nmax="$TOP_N" '
-BEGIN {
-  split(p1, a1, "\n"); split(p2, a2, "\n")
-  for (i = 1; i <= length(a1); i++) {
-    if (a1[i] == "") continue
-    n = split(a1[i], f, " ")
-    if (n < 3) continue
-    t1[f[1]] = f[2] + f[3]
-  }
-  rows = 0
-  for (i = 1; i <= length(a2); i++) {
-    if (a2[i] == "") continue
-    n = split(a2[i], f, " ")
-    if (n < 3) continue
-    pid = f[1]; if (!(pid in t1)) continue
-    d = (f[2] + f[3]) - t1[pid]; if (d < 0) d = 0
-    rows++; out[rows,1] = pid; out[rows,2] = (100.0 * d) / (clk * win)
-  }
-  for (i = 1; i <= rows; i++)
-    for (j = i + 1; j <= rows; j++)
-      if (out[j,2] > out[i,2])
-        for (k = 1; k <= 2; k++) { t = out[i,k]; out[i,k] = out[j,k]; out[j,k] = t }
-  for (i = 1; i <= rows; i++) {
-    if (i > nmax) break
-    call = "cat /proc/" out[i,1] "/comm 2>/dev/null"
-    comm = "?"; if ((call | getline comm) > 0) { } close(call)
-    printf "proc\t%s\t%.1f\t%s\n", out[i,1], out[i,2], comm
-  }
-}'

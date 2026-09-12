@@ -437,6 +437,55 @@ function formatRss(mib) {
   return Math.round(v) + "MB"
 }
 
+// ============================ SHARED PER-PROCESS =========================
+// procs.sh emits one line per process carrying every metric the dropdown
+// tables need:  proc\t<pid>\t<cpu%>\t<readKB/s>\t<writeKB/s>\t<rssKiB>\t<comm>
+// This single pass feeds the CPU, RAM, disk and battery "top processes"
+// lists, so four samplers no longer rescan the whole /proc tree each tick.
+function parseProcRows(raw) {
+  var lines = String(raw || "").split("\n")
+  var out = []
+  for (var i = 0; i < lines.length; i++) {
+    var p = lines[i].split("\t")
+    if (p.length < 7 || p[0] !== "proc") continue
+    var cpu = parseFloat(p[2]), rd = parseFloat(p[3]), wr = parseFloat(p[4]), rss = parseFloat(p[5])
+    out.push({ pid: String(p[1] || "").trim(),
+               cpu: isFinite(cpu) ? cpu : 0,
+               read: isFinite(rd) ? rd : 0, write: isFinite(wr) ? wr : 0,
+               rss: isFinite(rss) ? rss : 0, comm: String(p[6] || "").trim() })
+  }
+  return out
+}
+
+// Rank the shared rows for a stat's table. Each returns the exact shape that
+// stat's existing consumer expects, sorted by its metric descending (the panel
+// then truncates via topProcRows/topIoRows/ramTopProcs/topBatteryProcs).
+function procRowsByCpu(rows) {   // CPU % and the battery drain-proxy (top CPU)
+  var a = (Array.isArray(rows) ? rows : []).slice()
+  a.sort(function(x, y) { return y.cpu - x.cpu })
+  var out = []
+  for (var i = 0; i < a.length; i++)
+    out.push({ pid: a[i].pid, pct: Math.round(a[i].cpu * 10) / 10, comm: a[i].comm })
+  return out
+}
+function procRowsByIo(rows) {    // disk read+write, descending
+  var a = (Array.isArray(rows) ? rows : []).slice()
+  a.sort(function(x, y) { return (y.read + y.write) - (x.read + x.write) })
+  var out = []
+  for (var i = 0; i < a.length; i++)
+    out.push({ pid: a[i].pid, read: Math.round(a[i].read * 10) / 10,
+               write: Math.round(a[i].write * 10) / 10, comm: a[i].comm })
+  return out
+}
+function procRowsByRss(rows) {   // RAM resident set, descending (KiB, like ram.sh)
+  var a = (Array.isArray(rows) ? rows : []).slice()
+  a.sort(function(x, y) { return y.rss - x.rss })
+  var out = []
+  for (var i = 0; i < a.length; i++)
+    out.push({ pid: a[i].pid, rss: Math.round(a[i].rss), comm: a[i].comm })
+  return out
+}
+
 // ============================ NETWORK =====================================
 // Parses the tab-separated output of net.sh into a single object the panel
 // binds to. net.sh emits:
@@ -777,6 +826,10 @@ if (typeof module !== "undefined") {
     formatNetRate: formatNetRate,
     formatNetTotal: formatNetTotal,
     parseRamOutput: parseRamOutput,
+    parseProcRows: parseProcRows,
+    procRowsByCpu: procRowsByCpu,
+    procRowsByIo: procRowsByIo,
+    procRowsByRss: procRowsByRss,
     batteryIcon: batteryIcon,
     parseBatteryOutput: parseBatteryOutput,
     topBatteryProcs: topBatteryProcs,

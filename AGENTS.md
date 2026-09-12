@@ -25,12 +25,15 @@ Panel.qml       bar widget + dropdown UI host (QML)
 Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (no mpstat/sar/htop deps)
 gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
-disk.sh         df + /proc diskstats + /proc/<pid>/io sampler
-ram.sh          /proc/meminfo + per-process RSS sampler
-battery.sh      /sys/class/power_supply + per-process drain sampler (% and time use upower)
+disk.sh         df + /proc diskstats + /proc/<pid>/io sampler (top-I/O now via procs.sh)
+ram.sh          /proc/meminfo + per-process RSS sampler (top-RSS now via procs.sh)
+battery.sh      /sys/class/power_supply + per-process drain sampler (drain rows now via procs.sh)
+procs.sh        consolidated per-process sampler (stat+io+status, one pass) — feeds the
+                CPU / RAM / disk / battery "top processes" dropdown tables; runs on-demand
+                while one of those dropdowns is open
 ```
 
-> **`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`, `battery.sh` must stay executable
+> **`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`, `battery.sh`, `procs.sh` must stay executable
 > (`chmod +x`).** The shell runs them as programs; if the bit is lost (some
 > manual copies strip it), the sampler silently fails and the dropdown shows
 > stale/empty data. Git preserves the `100755` mode in this repo — just don't
