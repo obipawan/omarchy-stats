@@ -2728,7 +2728,7 @@ Panel {
             }
           }
           Row {
-            spacing: Style.space(0)
+            spacing: Style.space(3)
             Text {
               textFormat: Text.PlainText
               text: "▼"
@@ -2747,7 +2747,7 @@ Panel {
             }
           }
           Row {
-            spacing: Style.space(0)
+            spacing: Style.space(3)
             Text {
               textFormat: Text.PlainText
               text: "▲"
