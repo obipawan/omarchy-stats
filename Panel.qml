@@ -102,16 +102,22 @@ Panel {
     return root.cpuText
   }
 
-  // "Higher is better" mirror of usageColor, for free-space (the F: bar value):
-  // abundant free % is calm, middling is mild, scarce is alarming.
-  //   >= mildLimit  -> calm (theme text)
-  //   calmLimit..mildLimit -> accent (mild)
-  //   < calmLimit   -> urgent (alarming)
-  function freeColor(percent) {
+  // Disk-space bar value tints (percent 0..100), per the requested table
+  // (calmLimit/mildLimit, default 30/60). Free = higher is better; Used =
+  // lower is better:
+  //   free (higher better):  >= mildLimit calm, calmLimit..<mildLimit mild, < calmLimit urgent
+  //   used (lower better):   < calmLimit calm, calmLimit..<=mildLimit mild, > mildLimit urgent
+  function diskFreeColor(percent) {
     var v = Number(percent) || 0
     if (v >= root.mildLimit) return root.cpuText
     if (v >= root.calmLimit) return Color.accent
     return Color.urgent
+  }
+  function diskUsedColor(percent) {
+    var v = Number(percent) || 0
+    if (v > root.mildLimit) return Color.urgent
+    if (v < root.calmLimit) return root.cpuText
+    return Color.accent
   }
 
   // ---- CPU state --------------------------------------------------------
@@ -181,8 +187,8 @@ Panel {
   readonly property real diskFreePct: diskState.fsTotal > 0 ? Math.min(1, Math.max(0, diskState.fsFree / diskState.fsTotal)) : 0
   // Bar value colors: only the number is threshold-tinted (free = higher is
   // better, used = lower is better). Fall back to theme text until df reports.
-  readonly property color diskFreeBarColor: diskState.fsTotal > 0 ? freeColor(diskFreePct * 100) : cpuText
-  readonly property color diskUsedBarColor: diskState.fsTotal > 0 ? usageColor(diskUsedPct * 100) : cpuText
+  readonly property color diskFreeBarColor: diskState.fsTotal > 0 ? diskFreeColor(diskFreePct * 100) : cpuText
+  readonly property color diskUsedBarColor: diskState.fsTotal > 0 ? diskUsedColor(diskUsedPct * 100) : cpuText
 
   // ---- Bar widget sizing ----
   // CPU and GPU items are two-line text stacks (label over %) instead of an
