@@ -27,7 +27,7 @@ cpu.sh          /proc-based CPU sampler (no mpstat/sar/htop deps)
 gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
 disk.sh         df + /proc diskstats + /proc/<pid>/io sampler
 ram.sh          /proc/meminfo + per-process RSS sampler
-battery.sh      /sys/class/power_supply + per-process drain sampler (time uses upower)
+battery.sh      /sys/class/power_supply + per-process drain sampler (% and time use upower)
 ```
 
 > **`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`, `battery.sh` must stay executable

@@ -47,10 +47,11 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
     (Power W, Current mA, Voltage V, Health %, Cycles, Temperature, Energy Wh),
     a **charge-history graph** and **top processes** (the dominant battery drain;
     see note below).
-  - `/sys/class/power_supply` + `/proc` reads. The **time-to-full/empty** uses
-    upower's filtered `TimeToFull`/`TimeToEmpty` when the daemon is reachable
-    (like omarchy does), falling back to our own `/sys` power estimate otherwise,
-    so the countdown stays stable instead of flickering with instantaneous power.
+  - `/sys/class/power_supply` + `/proc` reads. The **percentage** and
+    **time-to-full/empty** use upower's filtered values when the daemon is
+    reachable (like omarchy does — its energy-based % and smoothed time), falling
+    back to our own `/sys` charge/power estimates otherwise, so the numbers match
+    omarchy and stay stable instead of flickering.
 - Network — the bar item is present; its dropdown is a placeholder for now.
 
 > **Battery "top processes" are a drain proxy, not measured watts.** Linux

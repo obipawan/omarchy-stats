@@ -4,11 +4,12 @@
 # /sys + /proc reads (no acpi/btop dependency). Reads the ACPI power-supply tree
 # in /sys/class/power_supply, discovers the battery (BAT*) and the AC adapter
 # (AC*/ADP*), and computes charge level, voltage, current, power, health, cycles,
-# temperature. Time-to-full/empty prefers upower's filtered TimeToFull/TimeToEmpty
-# (when the daemon is reachable — far more stable than a single instantaneous
-# /sys power sample), falling back to our own voltage*current estimate. It also
-# samples per-process CPU usage (the dominant battery drain) so the panel can
-# list the top consumers. Everything the panel needs comes back tab-separated:
+# temperature. When the upower daemon is reachable, it prefers upower's filtered
+# Percentage (energy-based, matching what omarchy shows) and TimeToFull/TimeToEmpty
+# (far more stable than a single instantaneous /sys power sample) — falling back to
+# our own /sys estimates otherwise. It also samples per-process CPU usage (the
+# dominant battery drain) so the panel can list the top consumers. Everything comes
+# back tab-separated:
 #
 #   present\t<0|1>               a battery exists
 #   state\t<charging|discharging|full|not-charging|unknown>
@@ -150,24 +151,30 @@ BEGIN {
 }
 '
 
-# --- override time estimates with upower's smoothed values ----------------
-# Our timeTo* maths uses a single instantaneous power sample (voltage*current),
-# which flickers a lot and makes the "time left" jump ~seconds to seconds. upower
-# smooths the energy rate over a history window, so its TimeToEmpty/TimeToFull
-# (seconds) are far more stable. Prefer those when the daemon is reachable; fall
-# back to our own computed values otherwise. Last-write-wins in the panel parser,
-# so re-emitting these lines after the awk block overrides the raw estimates.
+# --- override time/percentage estimates with upower ----------------
+# Our simple /sys maths uses instantaneous samples. upower filters/smooths its
+# values over a history window, so:
+#   - timeToFull/timeToEmpty (seconds) are far more stable than voltage*current;
+#   - Percentage is its own energy-based %, matching what omarchy shows.
+# Prefer upower's values when the daemon is reachable; fall back to our own /sys
+# estimates otherwise. Last-write-wins in the panel parser, so re-emitting these
+# lines after the awk block overrides the raw values.
 # NOTE: upower's device path is a DBus object path (/org/freedesktop/UPower/
 # devices/battery_<NAME>), NOT a filesystem glob under /org/... — derive it from
 # the /sys battery name we already discovered.
 if command -v busctl >/dev/null 2>&1 && [ -n "$BAT" ]; then
   bat_name=$(basename "$BAT")
   upower_dev="/org/freedesktop/UPower/devices/battery_${bat_name}"
-  up_ttf=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device TimeToFull  2>/dev/null | awk '{print $2}')
-  up_tte=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device TimeToEmpty 2>/dev/null | awk '{print $2}')
+  up_ttf=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device TimeToFull   2>/dev/null | awk '{print $2}')
+  up_tte=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device TimeToEmpty  2>/dev/null | awk '{print $2}')
+  up_pct=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device Percentage    2>/dev/null | awk '{print $2}')
   # Values are 0 when not in that state; only print when upower reports a real one.
   if [ "${up_ttf:-0}" -gt 0 ] 2>/dev/null; then printf "timeToFull\t%.0f\n" "$up_ttf"; fi
   if [ "${up_tte:-0}" -gt 0 ] 2>/dev/null; then printf "timeToEmpty\t%.0f\n" "$up_tte"; fi
+  # Percentage is a 0..100 fraction; only override when it parsed as a sane value.
+  if [ -n "${up_pct:-}" ] && awk -v p="$up_pct" 'BEGIN{ exit !(p>=0 && p<=100) }'; then
+    printf "pct\t%.0f\n" "$up_pct"
+  fi
 fi
 
 # --- top CPU consumers (drain proxy) ----------------------------------------
