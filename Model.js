@@ -595,6 +595,24 @@ function batteryPctText(pct) {
   return Math.round(v) + "%"
 }
 
+// ============================ BATTERY ICONS ==============================
+// Omarchy's battery icon set (copied byte-for-byte from omarchy.power's
+// panels/power/Model.js). Two parallel 10-tier Material Design battery glyph
+// arrays; pick by charge tier and charging state, exactly like omarchy does:
+//   - defaultIcons  : plain filled battery, drains as charge drops (0..9)
+//   - chargingIcons : same tiers with a plug/bolt drawn INSIDE the battery,
+//                     used while charging so the bolt is part of the icon
+// index = clamp(floor(pct/10), 0, 9) — a higher tier = a fuller battery.
+var batteryDefaultIcons = ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
+var batteryChargingIcons = ["󰢜", "󰂆", "󰂇", "󰂈", "󰢝", "󰂉", "󰢞", "󰂊", "󰂋", "󰂅"]
+
+function batteryIcon(pct, charging) {
+  var v = Number(pct)
+  if (!isFinite(v) || v < 0) v = 0
+  var index = Math.max(0, Math.min(9, Math.floor(v / 10)))
+  return (charging ? batteryChargingIcons : batteryDefaultIcons)[index]
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     statDefinitions: statDefinitions,
@@ -624,6 +642,7 @@ if (typeof module !== "undefined") {
     formatRamSize: formatRamSize,
     formatRss: formatRss,
     parseRamOutput: parseRamOutput,
+    batteryIcon: batteryIcon,
     parseBatteryOutput: parseBatteryOutput,
     topBatteryProcs: topBatteryProcs,
     formatBatteryTime: formatBatteryTime,

@@ -39,8 +39,9 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
   - A **top memory processes** table (name · pid · RSS) and PSI memory pressure.
   - Pure `/proc/meminfo` + `/proc/<pid>/status` reads — no `free`/`vmstat` dep.
 - **Battery** — fully wired:
-  - A one-line `HH:MM <icon>NN%` bar item: time-to-full/empty, a filled battery
-    glyph with the % overlaid *inside* it, and a small bolt while charging.
+  - A bar item: two stacked lines (percentage over time-to-full/empty) to the
+    LEFT of the battery icon (omarchy's 10-tier battery set — drains as charge
+    drops; a bolt-in-battery variant while charging).
   - Tinted by *reversed* charge thresholds (low charge = alarming).
   - A dropdown with a big charge icon + % + on-AC/on-battery state, power
     details (Power W, Current mA, Voltage V, Health %, Cycles, Temperature,

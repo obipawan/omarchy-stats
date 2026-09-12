@@ -316,11 +316,11 @@ Panel {
   // RAM shows "ram"/"NN%" (two text lines, like CPU/GPU).
   readonly property int ramBarHeight: Style.bar.sizeHorizontal
   readonly property int ramBarWidth: Style.space(34)
-  // Battery shows "HH:MM <icon+%>⚡" on one line (time + a battery glyph with the
-  // % overlaid inside + a bolt while charging), so it needs more width than the
-  // two-line stacks to fit e.g. "2:05 󰉃100%⚡".
+  // Battery bar: a two-line column (% over time-to-full/empty) to the LEFT of
+  // the omarchy battery icon. Needs enough width for e.g. "100%" over "10:00"
+  // plus the icon.
   readonly property int batteryBarHeight: Style.bar.sizeHorizontal
-  readonly property int batteryBarWidth: Style.space(56)
+  readonly property int batteryBarWidth: Style.space(64)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -459,22 +459,36 @@ Panel {
         font.bold: true
       }
 
-      // Battery: one line — time-to-full/empty, a battery icon, the % and a
-      // bolt while charging, all threshold-tinted (low charge = alarming).
-      // The % sits as normal text beside the icon (not overlaid) so it stays
-      // legible at bar size; see the comment on batteryBarWidth.
+      // Battery bar: on the left of the battery icon, two stacked lines —
+      // line 1 = percentage, line 2 = time-to-full/empty. The icon uses
+      // omarchy's battery set (tier-fills by charge level; while charging it's
+      // the bolt-in-battery variant). Everything is threshold-tinted (low
+      // charge = alarming).
       Row {
         visible: stat.id === "battery"
         Layout.alignment: Qt.AlignHCenter
-        spacing: Style.space(1)
-        Text {
+        spacing: Style.space(2)
+        Column {
+          spacing: Style.space(1)
           anchors.verticalCenter: parent.verticalCenter
-          textFormat: Text.PlainText
-          text: root.batteryTimeText
-          color: root.batteryColor(root.batteryState.pct)
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(8, Style.font.caption - 1)
-          font.bold: true
+          Text {
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            text: Model.batteryPctText(root.batteryState.pct)
+            color: root.batteryColor(root.batteryState.pct)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Math.max(8, Style.font.caption - 1)
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            text: root.batteryTimeText
+            color: root.batteryColor(root.batteryState.pct)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Math.max(7, Style.font.caption - 2)
+            font.bold: true
+          }
         }
         Text {
           anchors.verticalCenter: parent.verticalCenter
@@ -482,26 +496,7 @@ Panel {
           text: root.batteryIconGlyph()
           color: root.batteryColor(root.batteryState.pct)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(10, Style.font.caption)
-          font.bold: true
-        }
-        Text {
-          anchors.verticalCenter: parent.verticalCenter
-          textFormat: Text.PlainText
-          text: Model.batteryPctText(root.batteryState.pct)
-          color: root.batteryColor(root.batteryState.pct)
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(8, Style.font.caption - 1)
-          font.bold: true
-        }
-        Text {
-          visible: root.batteryState.charging
-          anchors.verticalCenter: parent.verticalCenter
-          textFormat: Text.PlainText
-          text: root.batteryBoltGlyph
-          color: root.batteryColor(root.batteryState.pct)
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.pixelSize: Math.max(11, Style.font.caption + 1)
           font.bold: true
         }
       }
@@ -557,18 +552,15 @@ Panel {
     }
   }
 
-  // The battery icon. We use the single battery glyph from Model.js (U+F0B44,
-  // nf-md-battery) — it renders as a recognisable battery with a narrow
-  // terminal and a wide body, unlike the material "fill-tier" battery glyphs
-  // which at bar size read as a solid "B" or a stray stroke. The charge LEVEL
-  // is conveyed by the % text and the threshold color, not by the icon shape.
-  // A plain (non-filled) outline is shown when no battery is present.
+  // The battery icon uses omarchy's exact icon set (Model.batteryIcon): two
+  // 10-tier Material Design battery arrays — a plain filled battery that drains
+  // with charge, and a bolt-in-battery variant used while charging. Selecting by
+  // charge tier makes the icon itself show the charge level (omarchy's approach);
+  // the % and time render beside it. A plain outline is shown when absent.
   readonly property string batteryOutlineGlyph: "󰉃"
-  readonly property string batteryIconGlyphChar: "󰭄"
-  readonly property string batteryBoltGlyph: "󰉩"
   function batteryIconGlyph() {
     if (!root.batteryState.ready) return root.batteryOutlineGlyph
-    return root.batteryIconGlyphChar
+    return Model.batteryIcon(root.batteryState.pct, root.batteryState.charging)
   }
 
   // The CPU/GPU bar items surface the live aggregate on their tooltip.
@@ -2329,19 +2321,8 @@ Panel {
                 font.pixelSize: Style.font.heading
                 font.bold: true
               }
-              // Bolt, charged yellow-accent, peeking from the top-right.
-              Text {
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.verticalCenterOffset: Style.space(-24)
-                visible: root.batteryState.charging
-                textFormat: Text.PlainText
-                text: root.batteryBoltGlyph
-                color: root.batteryColor(root.batteryState.pct)
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.display
-                font.bold: true
-              }
+              // No separate bolt overlay: while charging, batteryIconGlyph()
+              // selects omarchy's bolt-in-battery icon tier.
             }
 
             // Caption block: status + time-to-full/empty in a big readout.
