@@ -102,6 +102,18 @@ Panel {
     return root.cpuText
   }
 
+  // "Higher is better" mirror of usageColor, for free-space (the F: bar value):
+  // abundant free % is calm, middling is mild, scarce is alarming.
+  //   >= mildLimit  -> calm (theme text)
+  //   calmLimit..mildLimit -> accent (mild)
+  //   < calmLimit   -> urgent (alarming)
+  function freeColor(percent) {
+    var v = Number(percent) || 0
+    if (v >= root.mildLimit) return root.cpuText
+    if (v >= root.calmLimit) return Color.accent
+    return Color.urgent
+  }
+
   // ---- CPU state --------------------------------------------------------
   property var cpuState: ({ total: 0, cores: [], procs: [] })
   property var cpuHistory: []
@@ -164,11 +176,13 @@ Panel {
   // Heights normalized to 0..1 against the shared read+write max so the two
   // bars of a column are comparable and the plot doesn't rescale each tick.
   readonly property var diskIoHeights: Model.normalizeIo(diskIoWindow)
-  // Two-line bar text: "F: <free>" / "U: <used>" (same font, per the disk item).
-  readonly property string diskFreeText: "F: " + Model.formatGb(diskState.fsFree)
-  readonly property string diskUsedText: "U: " + Model.formatGb(diskState.fsUsed)
-  // Used-fraction 0..1 for a space bar, 0 when unknown.
+  // Used-/free-fraction 0..1 for the disk space coloring, 0 when unknown.
   readonly property real diskUsedPct: diskState.fsTotal > 0 ? Math.min(1, Math.max(0, diskState.fsUsed / diskState.fsTotal)) : 0
+  readonly property real diskFreePct: diskState.fsTotal > 0 ? Math.min(1, Math.max(0, diskState.fsFree / diskState.fsTotal)) : 0
+  // Bar value colors: only the number is threshold-tinted (free = higher is
+  // better, used = lower is better). Fall back to theme text until df reports.
+  readonly property color diskFreeBarColor: diskState.fsTotal > 0 ? freeColor(diskFreePct * 100) : cpuText
+  readonly property color diskUsedBarColor: diskState.fsTotal > 0 ? usageColor(diskUsedPct * 100) : cpuText
 
   // ---- Bar widget sizing ----
   // CPU and GPU items are two-line text stacks (label over %) instead of an
@@ -292,12 +306,12 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
       spacing: Style.space(0)
 
-      // For CPU/GPU: label over the live %. For disk: "F: <free>" over
-      // "U: <used>" (two lines, same font and weight).
+      // CPU/GPU: label over the live %, tinted by the usage thresholds.
       Text {
+        visible: stat.id !== "disk"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: stat.id === "disk" ? root.diskFreeText : stat.label.toLowerCase()
+        text: stat.label.toLowerCase()
         color: root.cpuText
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Math.max(8, Style.font.caption - 1)
@@ -305,13 +319,63 @@ Panel {
       }
       Text {
         id: pctLine
+        visible: stat.id !== "disk"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: stat.id === "disk" ? root.diskUsedText : root.livePctText(stat.id)
-        color: stat.id === "disk" ? root.cpuText : root.livePctColor(stat.id)
+        text: root.livePctText(stat.id)
+        color: root.livePctColor(stat.id)
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Math.max(8, Style.font.caption - 1)
         font.bold: true
+      }
+
+      // Disk: two lines. The F:/U: prefix stays theme text; only the value is
+      // threshold-tinted (free: higher-is-better; used: lower-is-better).
+      Row {
+        visible: stat.id === "disk"
+        Layout.alignment: Qt.AlignHCenter
+        spacing: Style.space(2)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "F:"
+          color: root.cpuText
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: Model.formatGb(root.diskState.fsFree)
+          color: root.diskFreeBarColor
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
+        }
+      }
+      Row {
+        visible: stat.id === "disk"
+        Layout.alignment: Qt.AlignHCenter
+        spacing: Style.space(2)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "U:"
+          color: root.cpuText
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: Model.formatGb(root.diskState.fsUsed)
+          color: root.diskUsedBarColor
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
+        }
       }
     }
   }

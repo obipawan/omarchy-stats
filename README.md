@@ -144,6 +144,10 @@ matches the install directory, which keeps `cpu.sh` discoverable.
 - Each dropdown has a **fixed height**: the top-processes lists always reserve
   `topProcesses` (CPU) / `diskTopProcesses` (I/O) rows, so the panel doesn't
   resize as processes appear and disappear. Empty ranks are simply blank.
+- The disk bar's two lines are threshold-tinted on the **value only**: the `U:`
+  (used) value uses `usageColor` (lower is better — alarming above `mildLimit`),
+  and the `F:` (free) value uses the mirror `freeColor` (higher is better —
+  alarming below `calmLimit`). Both reuse the `calmLimit`/`mildLimit` config.
 
 ## License
 
