@@ -444,7 +444,7 @@ Panel {
         visible: stat.id !== "disk" && stat.id !== "battery"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: stat.label.toLowerCase()
+        text: stat.label.toUpperCase()
         color: root.cpuText
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Math.max(8, Style.font.caption - 1)
