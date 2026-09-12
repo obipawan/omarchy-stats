@@ -1210,6 +1210,106 @@ Panel {
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
 
+  // History/usage graph rendered as ONE Canvas that paints every column in a
+  // single pass, instead of one Rectangle per column (~80-90 scene nodes per
+  // graph that previously built/lay-out/painted on dropdown open). `up` holds
+  // the normalized 0..1 column heights; when `dual` is set, `down` adds a
+  // center-zero split axis (e.g. read/write or down/up) growing downward.
+  component BarGraph: Canvas {
+    id: bargraph
+    // `up` (and `down` for dual) hold normalized 0..1 values. `style` picks a
+    // filled-column bar chart ("bars", the default) or a polyline ("line").
+    // Everything is drawn in one Canvas pass, so both modes stay cheap.
+    property var up: []
+    property var down: []
+    property color barColor: root.cpuData
+    property color barColor2: root.cpuDim
+    property bool dual: false
+    property string style: "bars"
+    // Center zero line used by the dual bar chart (drawn here, not by a parent).
+    property color zeroLineColor: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+    property real barWidth: Style.space(3)
+    property real spacing: Style.space(1)
+    onUpChanged: requestPaint()
+    onDownChanged: requestPaint()
+    onDualChanged: requestPaint()
+    onStyleChanged: requestPaint()
+    onWidthChanged: requestPaint()
+    onHeightChanged: requestPaint()
+    onPaint: {
+      var ctx = getContext("2d")
+      ctx.clearRect(0, 0, width, height)
+      var u = bargraph.up
+      if (!u || !Array.isArray(u) || u.length === 0) return
+      var bw = bargraph.barWidth, sp = bargraph.spacing
+      var n = u.length, step = bw + sp, half = height / 2
+      var px = function(i) { return i * step + bw / 2 }
+
+      if (bargraph.style === "line") {
+        var py = function(v) { return height - (Number(v) || 0) * height }
+        ctx.lineWidth = 2
+        ctx.lineCap = "round"
+        ctx.lineJoin = "round"
+        // Area fill under the up curve (single-series charts read as area lines).
+        if (!bargraph.dual) {
+          var c = bargraph.barColor
+          ctx.beginPath()
+          ctx.moveTo(px(0), py(u[0]))
+          for (var fa = 1; fa < n; fa++) ctx.lineTo(px(fa), py(u[fa]))
+          ctx.lineTo(px(n - 1), height)
+          ctx.lineTo(px(0), height)
+          ctx.closePath()
+          ctx.fillStyle = Qt.rgba(c.r, c.g, c.b, 0.15)
+          ctx.fill()
+        }
+        // up line (bars: cpuData / disk write / net up)
+        ctx.strokeStyle = bargraph.barColor
+        ctx.beginPath()
+        ctx.moveTo(px(0), py(u[0]))
+        for (var li = 1; li < n; li++) ctx.lineTo(px(li), py(u[li]))
+        ctx.stroke()
+        if (bargraph.dual) {
+          var dn = bargraph.down
+          ctx.strokeStyle = bargraph.barColor2
+          ctx.beginPath()
+          for (var di = 0; di < dn.length && di < n; di++) {
+            if (di === 0) ctx.moveTo(px(di), py(dn[di])); else ctx.lineTo(px(di), py(dn[di]))
+          }
+          ctx.stroke()
+        }
+        return
+      }
+
+      // --- bars (default) ---
+      var x = 0, i
+      ctx.fillStyle = bargraph.barColor
+      if (bargraph.dual) {
+        ctx.fillStyle = bargraph.zeroLineColor
+        ctx.fillRect(0, half - 1, width, 1)
+        ctx.fillStyle = bargraph.barColor
+        for (i = 0; i < n; i++) {
+          var uv = Number(u[i]) || 0
+          if (uv > 0) ctx.fillRect(x, half - Math.max(1, Math.round(uv * half)), bw, Math.max(1, Math.round(uv * half)))
+          x += step
+        }
+        var dnb = bargraph.down
+        ctx.fillStyle = bargraph.barColor2
+        x = 0
+        for (i = 0; i < dnb.length && i < n; i++) {
+          var dv = Number(dnb[i]) || 0
+          if (dv > 0) ctx.fillRect(x, half, bw, Math.max(1, Math.round(dv * half)))
+          x += step
+        }
+      } else {
+        for (i = 0; i < n; i++) {
+          var h = Math.max(1, Math.round((Number(u[i]) || 0) * height))
+          if (Number(u[i]) || 0 > 0) ctx.fillRect(x, height - h, bw, h)
+          x += step
+        }
+      }
+    }
+  }
+
   // A memory-usage speedometer: an open 270° arc with the gap at
   // the bottom, a faint tick ring, a glowing value arc that fills behind the
   // needle, a hubless needle, and a digital readout in the middle. Themed to
@@ -1243,103 +1343,87 @@ Panel {
     Behavior on value {
       NumberAnimation { duration: 500; easing.type: Easing.OutCubic }
     }
+    onValueChanged: gaugeCanvas.requestPaint()
 
-    Shape {
+    // Dial drawn as a single Canvas (track + glow + value arcs, tick ring and
+    // needle in one paint pass) — replaces a Shape.CurveRenderer path set and a
+    // 41-item tick Repeater, which were the heaviest part of opening the RAM
+    // dropdown.
+    Canvas {
+      id: gaugeCanvas
       anchors.fill: parent
-      preferredRendererType: Shape.CurveRenderer
+      onWidthChanged: requestPaint()
+      onHeightChanged: requestPaint()
+      onPaint: {
+        var ctx = getContext("2d")
+        ctx.clearRect(0, 0, width, height)
+        var cx = width / 2, cy = height / 2
+        var r = gauge.arcRadius
+        var rad = function(deg) { return deg * Math.PI / 180 }
+        var s0 = rad(gauge.dialStart)
+        var sw = rad(gauge.dialSweep)
 
-      // Track: the full scale, always visible, dim.
-      ShapePath {
-        strokeWidth: gauge.arcWidth
-        strokeColor: gauge.trackColor
-        fillColor: "transparent"
-        capStyle: ShapePath.RoundCap
+        // Track (full 270°, gap at bottom).
+        ctx.lineCap = "round"
+        ctx.strokeStyle = gauge.trackColor
+        ctx.lineWidth = gauge.arcWidth
+        ctx.beginPath()
+        ctx.arc(cx, cy, r, s0, s0 + sw, false)
+        ctx.stroke()
 
-        PathAngleArc {
-          centerX: gauge.width / 2
-          centerY: gauge.height / 2
-          radiusX: gauge.arcRadius
-          radiusY: gauge.arcRadius
-          startAngle: gauge.dialStart
-          sweepAngle: gauge.dialSweep
+        if (gauge.arcVisible) {
+          var vc = gauge.valueColor
+          var fracSw = sw * gauge.fraction
+          // Soft under-glow (backlit-ring stand-in).
+          ctx.strokeStyle = Qt.rgba(vc.r, vc.g, vc.b, 0.18)
+          ctx.lineWidth = gauge.arcWidth * 3
+          ctx.beginPath()
+          ctx.arc(cx, cy, r, s0, s0 + fracSw, false)
+          ctx.stroke()
+          // Value arc (fills behind the needle, threshold-tinted).
+          ctx.strokeStyle = vc
+          ctx.lineWidth = gauge.arcWidth
+          ctx.beginPath()
+          ctx.arc(cx, cy, r, s0, s0 + fracSw, false)
+          ctx.stroke()
         }
-      }
 
-      // Soft under-glow beneath the value arc (backlit-ring stand-in). Both
-      // arcs go transparent at rest so their round caps don't leave a dot.
-      ShapePath {
-        strokeWidth: gauge.arcWidth * 3
-        strokeColor: gauge.arcVisible ? Qt.rgba(gauge.valueColor.r, gauge.valueColor.g, gauge.valueColor.b, 0.18) : "transparent"
-        fillColor: "transparent"
-        capStyle: ShapePath.RoundCap
-
-        PathAngleArc {
-          centerX: gauge.width / 2
-          centerY: gauge.height / 2
-          radiusX: gauge.arcRadius
-          radiusY: gauge.arcRadius
-          startAngle: gauge.dialStart
-          sweepAngle: gauge.dialSweep * gauge.fraction
+        // Tick ring just inside the arc; every fifth tick is a major.
+        ctx.lineCap = "butt"
+        var n = gauge.tickCount, i
+        for (i = 0; i < n; i++) {
+          var major = (i % 5 === 0)
+          var a = rad(gauge.dialStart + (i / (n - 1)) * gauge.dialSweep)
+          var dx = Math.cos(a), dy = Math.sin(a)
+          var r1 = major ? 68 : 70
+          var r2 = major ? 77 : 75
+          ctx.strokeStyle = major ? gauge.majorTickColor : gauge.minorTickColor
+          ctx.lineWidth = major ? Math.max(2, Style.space(2)) : 1
+          ctx.beginPath()
+          ctx.moveTo(cx + dx * r1, cy + dy * r1)
+          ctx.lineTo(cx + dx * r2, cy + dy * r2)
+          ctx.stroke()
         }
-      }
 
-      // Value: fills behind the needle, threshold-tinted.
-      ShapePath {
-        strokeWidth: gauge.arcWidth
-        strokeColor: gauge.arcVisible ? gauge.valueColor : "transparent"
-        fillColor: "transparent"
-        capStyle: ShapePath.RoundCap
-
-        PathAngleArc {
-          centerX: gauge.width / 2
-          centerY: gauge.height / 2
-          radiusX: gauge.arcRadius
-          radiusY: gauge.arcRadius
-          startAngle: gauge.dialStart
-          sweepAngle: gauge.dialSweep * gauge.fraction
-        }
-      }
-    }
-
-    // Faint tick ring just inside the arc; every fifth tick is a major.
-    Repeater {
-      model: gauge.tickCount
-
-      Item {
-        required property int index
-        readonly property bool major: index % 5 === 0
-
-        anchors.fill: parent
-        rotation: gauge.dialStart + (index / (gauge.tickCount - 1)) * gauge.dialSweep - 270
-
-        Rectangle {
-          anchors.horizontalCenter: parent.horizontalCenter
-          y: gauge.arcWidth * 2 + (parent.major ? 0 : Style.space(2))
-          width: parent.major ? Math.max(2, Style.space(2)) : 1
-          height: parent.major ? Style.space(9) : Style.space(5)
-          radius: width / 2
-          color: parent.major ? gauge.majorTickColor : gauge.minorTickColor
-        }
-      }
-    }
-
-    // Hubless needle: a slender sliver that fades out toward the pivot.
-    Item {
-      anchors.fill: parent
-      rotation: gauge.dialStart + gauge.fraction * gauge.dialSweep - 270
-
-      Rectangle {
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: gauge.arcWidth * 2 + Style.space(8)
-        width: Math.max(2, Style.space(3))
-        height: gauge.diameter * 0.30
-        radius: width / 2
-
-        gradient: Gradient {
-          GradientStop { position: 0.0; color: gauge.valueColor }
-          GradientStop { position: 0.55; color: gauge.valueColor }
-          GradientStop { position: 1.0; color: "transparent" }
-        }
+        // Hubless needle: a slender sliver that fades out toward the pivot.
+        var na = rad(gauge.dialStart + gauge.fraction * gauge.dialSweep)
+        var ndx = Math.cos(na), ndy = Math.sin(na)
+        var rIn = gauge.arcWidth * 2 + Style.space(10)
+        var rOut = rIn + gauge.diameter * 0.30
+        var ix = cx + ndx * rIn, iy = cy + ndy * rIn
+        var ox = cx + ndx * rOut, oy = cy + ndy * rOut
+        var vc2 = gauge.valueColor
+        var grad = ctx.createLinearGradient(ix, iy, ox, oy)
+        grad.addColorStop(0.0, "transparent")
+        grad.addColorStop(0.55, Qt.rgba(vc2.r, vc2.g, vc2.b, 1))
+        grad.addColorStop(1.0, Qt.rgba(vc2.r, vc2.g, vc2.b, 1))
+        ctx.strokeStyle = grad
+        ctx.lineWidth = Math.max(2, Style.space(3))
+        ctx.lineCap = "round"
+        ctx.beginPath()
+        ctx.moveTo(ix, iy)
+        ctx.lineTo(ox, oy)
+        ctx.stroke()
       }
     }
 
@@ -1533,26 +1617,11 @@ Panel {
             anchors.fill: parent
             color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
           }
-          Row {
-            id: historyBarsRow
-            anchors.fill: parent
-            spacing: Style.space(1)
-            Repeater {
-              model: root.cpuGraphHeights
-              Item {
-                required property real modelData
-                width: Style.space(3)
-                height: historyBarsRow.height
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  anchors.bottom: parent.bottom
-                  width: Style.space(3)
-                  height: Math.max(Style.space(1), Math.round(modelData * parent.height))
-                  color: root.cpuData
-                }
-              }
+          BarGraph {
+              anchors.fill: parent
+              up: root.cpuGraphHeights
+              style: "line"
             }
-          }
         }
 
         PanelSeparator {
@@ -1864,25 +1933,10 @@ Panel {
               anchors.fill: parent
               color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
             }
-            Row {
-              id: gpuHistoryBarsRow
+            BarGraph {
               anchors.fill: parent
-              spacing: Style.space(1)
-              Repeater {
-                model: root.gpuGraphHeights
-                Item {
-                  required property real modelData
-                  width: Style.space(3)
-                  height: gpuHistoryBarsRow.height
-                  Rectangle {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: parent.bottom
-                    width: Style.space(3)
-                    height: Math.max(Style.space(1), Math.round(modelData * parent.height))
-                    color: root.cpuData
-                  }
-                }
-              }
+              up: root.gpuGraphHeights
+              style: "line"
             }
           }
         }
@@ -2022,41 +2076,13 @@ Panel {
             anchors.fill: parent
             color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
           }
-          // Zero line at the vertical middle.
-          Rectangle {
-            width: parent.width
-            height: 1
-            y: parent.height / 2
-            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
-          }
-          Row {
-            id: ioGraphRow
+          // zero-line for the dual chart is drawn by BarGraph itself
+          BarGraph {
             anchors.fill: parent
-            spacing: Style.space(1)
-            Repeater {
-              model: root.diskIoHeights
-              Item {
-                required property var modelData
-                width: Style.space(3)
-                height: ioGraphRow.height
-                // Write bar grows UP from the zero line (positive).
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  y: parent.height / 2 - Math.max(1, Math.round(modelData.write * parent.height / 2))
-                  width: Style.space(3)
-                  height: Math.max(1, Math.round(modelData.write * parent.height / 2))
-                  color: root.cpuData
-                }
-                // Read bar grows DOWN from the zero line (negative).
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  y: parent.height / 2
-                  width: Style.space(3)
-                  height: Math.max(1, Math.round(modelData.read * parent.height / 2))
-                  color: root.cpuDim
-                }
-              }
-            }
+            dual: true
+            up: (function(){ var v=[]; for (var i=0;i<root.diskIoHeights.length;i++) v.push(root.diskIoHeights[i].write); return v })()
+            down: (function(){ var v=[]; for (var i=0;i<root.diskIoHeights.length;i++) v.push(root.diskIoHeights[i].read); return v })()
+            style: "line"
           }
         }
 
@@ -2191,11 +2217,15 @@ Panel {
           }
         }
 
-        // Memory usage speedometer, centered.
+        // Memory usage speedometer, centered. The wrapper needs an explicit height
+        // (dial diameter), otherwise the Column collapses it to 0px and the
+        // dial is painted on top of the next section — invisible.
         Item {
           width: parent.width
+          height: Style.space(170)
           Layout.alignment: Qt.AlignHCenter
           RamGauge {
+            anchors.centerIn: parent
             value: root.ramUsedPct
           }
         }
@@ -2306,26 +2336,11 @@ Panel {
             anchors.fill: parent
             color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
           }
-          Row {
-            id: ramHistoryBarsRow
-            anchors.fill: parent
-            spacing: Style.space(1)
-            Repeater {
-              model: root.ramGraphHeights
-              Item {
-                required property real modelData
-                width: Style.space(3)
-                height: ramHistoryBarsRow.height
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  anchors.bottom: parent.bottom
-                  width: Style.space(3)
-                  height: Math.max(Style.space(1), Math.round(modelData * parent.height))
-                  color: root.cpuData
-                }
-              }
+          BarGraph {
+              anchors.fill: parent
+              up: root.ramGraphHeights
+              style: "line"
             }
-          }
         }
 
         PanelSeparator {
@@ -2775,25 +2790,10 @@ Panel {
               anchors.fill: parent
               color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
             }
-            Row {
-              id: batteryHistoryBarsRow
+            BarGraph {
               anchors.fill: parent
-              spacing: Style.space(1)
-              Repeater {
-                model: root.batteryGraphHeights
-                Item {
-                  required property real modelData
-                  width: Style.space(3)
-                  height: batteryHistoryBarsRow.height
-                  Rectangle {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: parent.bottom
-                    width: Style.space(3)
-                    height: Math.max(Style.space(1), Math.round(modelData * parent.height))
-                    color: root.cpuData
-                  }
-                }
-              }
+              up: root.batteryGraphHeights
+              style: "line"
             }
           }
 
@@ -2954,41 +2954,13 @@ Panel {
             anchors.fill: parent
             color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
           }
-          // Zero line at the vertical middle.
-          Rectangle {
-            width: parent.width
-            height: 1
-            y: parent.height / 2
-            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
-          }
-          Row {
-            id: netGraphRow
+          // zero-line for the dual chart is drawn by BarGraph itself
+          BarGraph {
             anchors.fill: parent
-            spacing: Style.space(1)
-            Repeater {
-              model: root.netGraphHeights
-              Item {
-                required property var modelData
-                width: Style.space(3)
-                height: netGraphRow.height
-                // Upload bar grows UP from the zero line (positive).
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  y: parent.height / 2 - Math.max(1, Math.round(modelData.up * parent.height / 2))
-                  width: Style.space(3)
-                  height: Math.max(1, Math.round(modelData.up * parent.height / 2))
-                  color: root.cpuData
-                }
-                // Download bar grows DOWN from the zero line (negative).
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  y: parent.height / 2
-                  width: Style.space(3)
-                  height: Math.max(1, Math.round(modelData.down * parent.height / 2))
-                  color: root.cpuDim
-                }
-              }
-            }
+            dual: true
+            up: (function(){ var v=[]; for (var i=0;i<root.netGraphHeights.length;i++) v.push(root.netGraphHeights[i].up); return v })()
+            down: (function(){ var v=[]; for (var i=0;i<root.netGraphHeights.length;i++) v.push(root.netGraphHeights[i].down); return v })()
+            style: "line"
           }
         }
 
