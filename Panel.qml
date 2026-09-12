@@ -317,11 +317,13 @@ Panel {
   readonly property int ramBarHeight: Style.bar.sizeHorizontal
   readonly property int ramBarWidth: Style.space(34)
   // Battery bar: a two-line column (% over time-to-full/empty) to the LEFT of
-  // the omarchy battery icon. Sized to hug the actual content (the two-line
-  // column + the icon) so it doesn't get wide dead gutters like a big slot
-  // would — the two-line text and icon fill the width edge to edge.
+  // the omarchy battery icon. The bar item's outer container centers the
+  // contents in this slot width, so a wider slot adds dead gutter on each side
+  // and pushes the neighbours apart (measured gaps ~28px when it hugs content
+  // vs ~50px when oversized). Keep it just big enough to fit the two text lines
+  // + the icon, matching how tightly ram/disk hug their values.
   readonly property int batteryBarHeight: Style.bar.sizeHorizontal
-  readonly property int batteryBarWidth: Style.space(60)
+  readonly property int batteryBarWidth: Style.space(32)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -495,16 +497,16 @@ Panel {
             font.bold: true
           }
         }
-        // Aligned to the column's centre line. A bare Text in the Row (no
-        // fixed-width Item wrapper, no anchors) so the Row hugs the content.
+        // Aligned to the column's centre line. A bare Text in the Row so the Row hugs
+        // the content width (no anchors/alignment on the Text — anchoring or a
+        // vertical alignment shoves the icon away from the column).
         Text {
           textFormat: Text.PlainText
           text: root.batteryIconGlyph()
           color: root.batteryColor(root.batteryState.pct)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(16, Style.font.caption + 5)
+          font.pixelSize: Math.max(14, Style.font.caption + 3)
           font.bold: true
-          Layout.alignment: Qt.AlignVCenter
         }
       }
 
