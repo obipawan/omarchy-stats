@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -19,7 +20,10 @@ import "Model.js" as Model
 // shown as an aggregate %, per-core bars, the top-N heavy processes, and a
 // configurable history graph. Disk is wired too: a two-line F:/U: bar item plus
 // a dropdown with a dual-axis read/write I/O history and top I/O processes.
-// The other stats (RAM, battery, network) still show a placeholder.
+// RAM is wired too: a two-line "ram / NN%" bar item plus a dropdown with a
+// memory-pressure speedometer, usage history, a user/system/free/swap
+// distribution, and top memory processes. The remaining stats (battery,
+// network) still show a placeholder.
 //
 // Per-widget settings come from the shell.json entry (see `setting()`), e.g.:
 //   topProcesses       default 8     how many heavy processes to list (CPU)
@@ -63,6 +67,7 @@ Panel {
   readonly property string cpuScript: root.pluginDir + "/cpu.sh"
   readonly property string gpuScript: root.pluginDir + "/gpu.sh"
   readonly property string diskScript: root.pluginDir + "/disk.sh"
+  readonly property string ramScript: root.pluginDir + "/ram.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
   // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
   readonly property string pluginDir:
@@ -82,6 +87,15 @@ Panel {
   readonly property string diskMount: setting("diskMount", "/")
   // Rows in the disk "top I/O processes" table (independent of CPU topProcesses).
   readonly property int diskTopProcesses: Math.max(1, parseInt(setting("diskTopProcesses", 5), 10) || 5)
+  // RAM polls the same meminfo/status snapshot each tick; this is its poll
+  // period (defaults to refreshSeconds). No sample window is needed: meminfo
+  // and per-process RSS are instantaneous /proc reads.
+  readonly property int ramRefreshSeconds: Math.max(1, parseInt(setting("ramRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
+  // Rows in the RAM "top memory processes" table.
+  readonly property int topRamProcesses: Math.max(1, parseInt(setting("topRamProcesses", 5), 10) || 5)
+  // Skip entries using less than this many MB of RAM in the top-memory table,
+  // so the list isn't dominated by hundreds of tiny processes.
+  readonly property int ramMinProcessMB: Math.max(0, parseInt(setting("ramMinProcessMB", 5), 10) || 5)
   readonly property int historySeconds: Math.max(30, parseInt(setting("historyMinutes", 60), 10) || 60) * 60
 
   // Usage tint thresholds, as percent. Settings (e.g. `omarchy bar set
@@ -190,6 +204,41 @@ Panel {
   readonly property color diskFreeBarColor: diskState.fsTotal > 0 ? diskFreeColor(diskFreePct * 100) : cpuText
   readonly property color diskUsedBarColor: diskState.fsTotal > 0 ? diskUsedColor(diskUsedPct * 100) : cpuText
 
+  // ---- RAM state --------------------------------------------------------
+  // Instantaneous /proc/meminfo snapshot plus per-process RSS from status
+  // files. `used` is apps + kernel-private (excluding page cache), `system`
+  // is the reclaimable page cache, so used + system + free == total.
+  property var ramState: ({ total: 0, free: 0, available: 0, used: 0, system: 0,
+                            buffers: 0, cached: 0, shared: 0,
+                            swapTotal: 0, swapUsed: 0, swapCached: 0,
+                            ready: false, procs: [] })
+  property var ramHistory: []
+  property bool ramPolling: false
+
+  // Top memory consumers (RSS, MiB) — filtered by the ramMinProcessMB floor.
+  readonly property var ramTopProcs: (function() {
+    var rows = []
+    for (var i = 0; i < ramState.procs.length; i++) {
+      var p = ramState.procs[i]
+      if (p.rss / 1024 >= root.ramMinProcessMB) rows.push(p)
+    }
+    return rows.slice(0, Math.min(root.topRamProcesses, rows.length))
+  })()
+  // RAM pressure % (0..100) = used / total; the same figure drives the bar, the
+  // gauge arc and the history graph so they always agree.
+  readonly property real ramUsedPct: ramState.total > 0 ? Math.max(0, Math.min(100, 100 * ramState.used / ramState.total)) : 0
+  // Same fixed 0..100% axis as CPU/GPU so the graph reads consistently.
+  readonly property var ramGraph: Model.scrollWindow(ramHistory, historyBuckets)
+  readonly property var ramGraphHeights: Model.normalize(ramGraph, 100)
+  readonly property string ramMemText:
+    (ramState.used >= 0 && ramState.total >= 0)
+      ? Model.formatRamSize(ramState.used) + " / " + Model.formatRamSize(ramState.total)
+      : "--"
+  readonly property string ramSwapText:
+    ramState.swapTotal > 0
+      ? Model.formatRamSize(ramState.swapUsed) + " / " + Model.formatRamSize(ramState.swapTotal)
+      : "off"
+
   // ---- Bar widget sizing ----
   // CPU and GPU items are two-line text stacks (label over %) instead of an
   // icon, so they need a bit more height than the icon slot and enough width
@@ -202,6 +251,9 @@ Panel {
   // more width than the CPU/GPU label-over-% stack to fit e.g. "F: 99.9GB".
   readonly property int diskBarHeight: Style.bar.sizeHorizontal
   readonly property int diskBarWidth: Style.space(48)
+  // RAM shows "ram"/"NN%" (two text lines, like CPU/GPU).
+  readonly property int ramBarHeight: Style.bar.sizeHorizontal
+  readonly property int ramBarWidth: Style.space(34)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -217,13 +269,14 @@ Panel {
   function isLiveStat(stat) {
     if (!stat) return false
     var id = String(stat.id)
-    return id === "cpu" || id === "gpu" || id === "disk"
+    return id === "cpu" || id === "gpu" || id === "disk" || id === "ram"
   }
 
   function barItemWidth(stat) {
     if (stat && String(stat.id) === "cpu") return root.cpuBarWidth
     if (stat && String(stat.id) === "gpu") return root.gpuBarWidth
     if (stat && String(stat.id) === "disk") return root.diskBarWidth
+    if (stat && String(stat.id) === "ram") return root.ramBarWidth
     return Style.bar.iconSlot
   }
 
@@ -231,6 +284,7 @@ Panel {
     if (stat && String(stat.id) === "cpu") return root.cpuBarHeight
     if (stat && String(stat.id) === "gpu") return root.gpuBarHeight
     if (stat && String(stat.id) === "disk") return root.diskBarHeight
+    if (stat && String(stat.id) === "ram") return root.ramBarHeight
     return Style.bar.sizeHorizontal
   }
 
@@ -397,19 +451,23 @@ Panel {
     if (stat.id === "disk")
       return stat.label + " — " + Model.formatGb(root.diskState.fsUsed) + " used / " +
              Model.formatGb(root.diskState.fsFree) + " free"
+    if (stat.id === "ram")
+      return stat.label + " — " + root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
     return stat.label
   }
 
-  // Live % text/color for a stat's bar label, keyed by stat id (cpu/gpu).
+  // Live % text/color for a stat's bar label, keyed by stat id (cpu/gpu/ram).
   function livePctText(id) {
     if (String(id) === "cpu") return Model.formatPct(root.cpuState.total)
     if (String(id) === "gpu") return root.gpuState.ready ? Model.formatPct(root.gpuState.total) : "…"
+    if (String(id) === "ram") return Model.formatPct(root.ramUsedPct)
     return "--"
   }
 
   function livePctColor(id) {
     if (String(id) === "cpu") return root.usageColor(root.cpuState.total)
     if (String(id) === "gpu") return root.usageColor(root.gpuState.total)
+    if (String(id) === "ram") return root.usageColor(root.ramUsedPct)
     return root.cpuText
   }
 
@@ -419,6 +477,7 @@ Panel {
     if (stat.id === "cpu") refreshCpu()
     else if (stat.id === "gpu") refreshGpu()
     else if (stat.id === "disk") refreshDisk()
+    else if (stat.id === "ram") refreshRam()
     root.controller.show()
   }
 
@@ -572,6 +631,42 @@ Panel {
     onTriggered: { if (!root.diskPolling) root.refreshDisk() }
   }
 
+  // ============================ RAM polling ==============================
+  // A single instantaneous /proc pass (meminfo + status). No sample window —
+  // unlike CPU/disk there's no rate to average, so refreshRam is a simple run
+  // of ram.sh. Both the bar/`%` and the dropdown come from the same snapshot.
+  function refreshRam() {
+    if (root.ramPolling) return
+    root.ramPolling = true
+    ramProc.command = [root.ramScript, String(root.topRamProcesses)]
+    ramProc.running = true
+  }
+
+  Process {
+    id: ramProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onRamFinished(text)
+    }
+  }
+
+  function onRamFinished(raw) {
+    root.ramPolling = false
+    var parsed = Model.parseRamOutput(raw)
+    root.ramState = parsed
+    var now = Date.now() / 1000
+    // Only a live sample feeds the history graph.
+    if (parsed.ready) root.ramHistory = Model.appendHistory(root.ramHistory, now, parsed.used / parsed.total * 100, root.historySeconds)
+  }
+
+  Timer {
+    id: ramPollTimer
+    interval: root.ramRefreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: { if (!root.ramPolling) root.refreshRam() }
+  }
+
   // Hero text: for CPU the title is "CPU CORES"; for GPU it's the matching
   // "GPU CORES" (the vendor labels it engines, but "CORES" keeps the pair
   // visually consistent). Neither repeats the stat label in meta — other stats
@@ -582,6 +677,7 @@ Panel {
     if (root.activeStat.id === "cpu") return "CPU CORES"
     if (root.activeStat.id === "gpu") return "GPU CORES"
     if (root.activeStat.id === "disk") return "DISK I/O"
+    if (root.activeStat.id === "ram") return "RAM USAGE"
     return root.activeStat.label
   }
 
@@ -598,7 +694,169 @@ Panel {
            + (d.fsUsed >= 0 && d.fsFree >= 0 ? " · " : "")
            + (d.fsFree >= 0 ? "F: " + Model.formatGb(d.fsFree) + " free" : "")
     }
+    if (root.activeStat.id === "ram")
+      return root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
     return Model.sectionTitle(root.activeStat) + " — coming soon"
+  }
+
+  // A memory-usage speedometer: an open 270° arc with the gap at
+  // the bottom, a faint tick ring, a glowing value arc that fills behind the
+  // needle, a hubless needle, and a digital readout in the middle. Themed to
+  // the panel (root.cpuText / usageColor) rather than a dark overlay scrim.
+  // `value` is the usage percent (0..100); the arc + needle take the same
+  // threshold color as the bar item's %, so calm/mild/alarming show at a glance.
+  component RamGauge: Item {
+    id: gauge
+
+    required property real value
+    property string unit: "%"
+
+    readonly property real diameter: Style.space(170)
+    // 0° = 3 o'clock, clockwise (PathAngleArc's convention); 135° start with a
+    // 270° sweep leaves the gap at the bottom, like a car-cluster gauge.
+    readonly property real dialStart: 135
+    readonly property real dialSweep: 270
+    readonly property int tickCount: 41
+    readonly property real arcWidth: Style.space(4)
+    readonly property real arcRadius: diameter / 2 - arcWidth
+    readonly property color trackColor: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.14)
+    readonly property color minorTickColor: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+    readonly property color majorTickColor: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.3)
+    readonly property color valueColor: root.usageColor(value)
+    readonly property real fraction: Math.max(0, Math.min(1, value / 100))
+    readonly property bool arcVisible: fraction > 0.004
+
+    width: diameter
+    height: diameter
+
+    Behavior on value {
+      NumberAnimation { duration: 500; easing.type: Easing.OutCubic }
+    }
+
+    Shape {
+      anchors.fill: parent
+      preferredRendererType: Shape.CurveRenderer
+
+      // Track: the full scale, always visible, dim.
+      ShapePath {
+        strokeWidth: gauge.arcWidth
+        strokeColor: gauge.trackColor
+        fillColor: "transparent"
+        capStyle: ShapePath.RoundCap
+
+        PathAngleArc {
+          centerX: gauge.width / 2
+          centerY: gauge.height / 2
+          radiusX: gauge.arcRadius
+          radiusY: gauge.arcRadius
+          startAngle: gauge.dialStart
+          sweepAngle: gauge.dialSweep
+        }
+      }
+
+      // Soft under-glow beneath the value arc (backlit-ring stand-in). Both
+      // arcs go transparent at rest so their round caps don't leave a dot.
+      ShapePath {
+        strokeWidth: gauge.arcWidth * 3
+        strokeColor: gauge.arcVisible ? Qt.rgba(gauge.valueColor.r, gauge.valueColor.g, gauge.valueColor.b, 0.18) : "transparent"
+        fillColor: "transparent"
+        capStyle: ShapePath.RoundCap
+
+        PathAngleArc {
+          centerX: gauge.width / 2
+          centerY: gauge.height / 2
+          radiusX: gauge.arcRadius
+          radiusY: gauge.arcRadius
+          startAngle: gauge.dialStart
+          sweepAngle: gauge.dialSweep * gauge.fraction
+        }
+      }
+
+      // Value: fills behind the needle, threshold-tinted.
+      ShapePath {
+        strokeWidth: gauge.arcWidth
+        strokeColor: gauge.arcVisible ? gauge.valueColor : "transparent"
+        fillColor: "transparent"
+        capStyle: ShapePath.RoundCap
+
+        PathAngleArc {
+          centerX: gauge.width / 2
+          centerY: gauge.height / 2
+          radiusX: gauge.arcRadius
+          radiusY: gauge.arcRadius
+          startAngle: gauge.dialStart
+          sweepAngle: gauge.dialSweep * gauge.fraction
+        }
+      }
+    }
+
+    // Faint tick ring just inside the arc; every fifth tick is a major.
+    Repeater {
+      model: gauge.tickCount
+
+      Item {
+        required property int index
+        readonly property bool major: index % 5 === 0
+
+        anchors.fill: parent
+        rotation: gauge.dialStart + (index / (gauge.tickCount - 1)) * gauge.dialSweep - 270
+
+        Rectangle {
+          anchors.horizontalCenter: parent.horizontalCenter
+          y: gauge.arcWidth * 2 + (parent.major ? 0 : Style.space(2))
+          width: parent.major ? Math.max(2, Style.space(2)) : 1
+          height: parent.major ? Style.space(9) : Style.space(5)
+          radius: width / 2
+          color: parent.major ? gauge.majorTickColor : gauge.minorTickColor
+        }
+      }
+    }
+
+    // Hubless needle: a slender sliver that fades out toward the pivot.
+    Item {
+      anchors.fill: parent
+      rotation: gauge.dialStart + gauge.fraction * gauge.dialSweep - 270
+
+      Rectangle {
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: gauge.arcWidth * 2 + Style.space(8)
+        width: Math.max(2, Style.space(3))
+        height: gauge.diameter * 0.30
+        radius: width / 2
+
+        gradient: Gradient {
+          GradientStop { position: 0.0; color: gauge.valueColor }
+          GradientStop { position: 0.55; color: gauge.valueColor }
+          GradientStop { position: 1.0; color: "transparent" }
+        }
+      }
+    }
+
+    Column {
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.top: parent.verticalCenter
+      anchors.topMargin: Style.space(10)
+      spacing: 0
+
+      Text {
+        textFormat: Text.PlainText
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: Model.formatPct(gauge.value)
+        color: gauge.valueColor
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.display
+        font.bold: true
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: gauge.unit
+        color: root.cpuDim
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
   }
 
   // ---- Dropdown ----------------------------------------------------------
@@ -1378,9 +1636,451 @@ Panel {
         }
       }
 
+      // ==================== RAM body ==================================
+      Column {
+        visible: root.activeStat && root.activeStat.id === "ram"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(10)
+
+        // Headline: the live usage % share a baseline with a caption, like
+        // the other stats' TOTAL/USAGE row. It mirrors the bar item.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            id: pressureLabel
+            textFormat: Text.PlainText
+            text: "USAGE"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            anchors.baseline: pressureLabel.baseline
+            text: Model.formatPct(root.ramUsedPct)
+            color: root.usageColor(root.ramUsedPct)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: root.ramMemText
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+        }
+
+        // Memory usage speedometer, centered.
+        Item {
+          width: parent.width
+          Layout.alignment: Qt.AlignHCenter
+          RamGauge {
+            value: root.ramUsedPct
+          }
+        }
+
+        // ---- Memory pressure (PSI) section ----
+        // True "memory pressure": the share of the recent 10s window that at
+        // least one thread was stalled waiting for memory ('some'), vs all
+        // threads blocked ('full'). From /proc/pressure/memory. Hidden when the
+        // kernel exposes no PSI file. Raised values (not just usage %) warn of
+        // real strain — cache can't be reclaimed to relieve it.
+        Column {
+          visible: root.ramState.psiSome10 >= 0
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSectionHeader {
+            text: "MEMORY PRESSURE (PSI)"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+
+          // 'some' — at least one thread stalled on memory.
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text {
+              id: psiSomeLabel
+              textFormat: Text.PlainText
+              text: "SOME"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              textFormat: Text.PlainText
+              anchors.baseline: psiSomeLabel.baseline
+              text: Model.formatPsiPct(root.ramState.psiSome10)
+              color: root.usageColor(root.ramState.psiSome10)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: "of 10s, any thread stalled"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          // 'full' — all threads blocked.
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text {
+              id: psiFullLabel
+              textFormat: Text.PlainText
+              text: "FULL"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              textFormat: Text.PlainText
+              anchors.baseline: psiFullLabel.baseline
+              text: Model.formatPsiPct(root.ramState.psiFull10)
+              color: root.usageColor(root.ramState.psiFull10)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: "all threads stalled"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Usage history section (same as the other stats) ----
+        PanelSectionHeader {
+          text: "USAGE HISTORY"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
+
+        Item {
+          width: parent.width
+          height: Style.space(60)
+          clip: true
+          Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
+          }
+          Row {
+            id: ramHistoryBarsRow
+            anchors.fill: parent
+            spacing: Style.space(1)
+            Repeater {
+              model: root.ramGraphHeights
+              Item {
+                required property real modelData
+                width: Style.space(3)
+                height: ramHistoryBarsRow.height
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  anchors.bottom: parent.bottom
+                  width: Style.space(3)
+                  height: Math.max(Style.space(1), Math.round(modelData * parent.height))
+                  color: root.cpuData
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Distribution section ----
+        // User / system / free / swap, each as a labeled value with a thin
+        // proportional bar. The first three sum to total; swap is its own gauge
+        // against the swap allocation. Colors mirror the usage thresholds so a
+        // hot user allocation jumps out.
+        PanelSectionHeader {
+          text: "DISTRIBUTION"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          width: parent.width
+        }
+
+        // user = used, fraction of total.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+          Text {
+            textFormat: Text.PlainText
+            text: "USER"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: Model.formatRamSize(root.ramState.used)
+            color: root.usageColor(root.ramUsedPct)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Item {
+            width: Style.space(90)
+            height: Style.space(6)
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+              radius: root.cornerTiny
+            }
+            Rectangle {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(Style.space(1), Math.round(parent.width * (root.ramState.total > 0 ? Math.min(1, Math.max(0, root.ramState.used / root.ramState.total)) : 0)))
+              height: parent.height
+              radius: root.cornerTiny
+              color: root.cpuData
+            }
+          }
+        }
+
+        // system = reclaimable page cache, fraction of total.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+          Text {
+            textFormat: Text.PlainText
+            text: "SYSTEM"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: Model.formatRamSize(root.ramState.system)
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Item {
+            width: Style.space(90)
+            height: Style.space(6)
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+              radius: root.cornerTiny
+            }
+            Rectangle {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(Style.space(1), Math.round(parent.width * (root.ramState.total > 0 ? Math.min(1, Math.max(0, root.ramState.system / root.ramState.total)) : 0)))
+              height: parent.height
+              radius: root.cornerTiny
+              color: root.cpuData
+            }
+          }
+        }
+
+        // free, fraction of total.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+          Text {
+            textFormat: Text.PlainText
+            text: "FREE"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: Model.formatRamSize(root.ramState.free)
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Item {
+            width: Style.space(90)
+            height: Style.space(6)
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+              radius: root.cornerTiny
+            }
+            Rectangle {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(Style.space(1), Math.round(parent.width * (root.ramState.total > 0 ? Math.min(1, Math.max(0, root.ramState.free / root.ramState.total)) : 0)))
+              height: parent.height
+              radius: root.cornerTiny
+              color: root.cpuData
+            }
+          }
+        }
+
+        // swap, fraction of swap total; dimmed/absent when no swap is set up.
+        Row {
+          visible: root.ramState.swapTotal > 0
+          width: parent.width
+          spacing: Style.space(10)
+          Text {
+            textFormat: Text.PlainText
+            text: "SWAP"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: Model.formatRamSize(root.ramState.swapUsed)
+            color: root.usageColor(root.ramState.swapTotal > 0 ? 100 * root.ramState.swapUsed / root.ramState.swapTotal : 0)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "/ " + Model.formatRamSize(root.ramState.swapTotal)
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Item {
+            width: Style.space(90)
+            height: Style.space(6)
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+              radius: root.cornerTiny
+            }
+            Rectangle {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(Style.space(1), Math.round(parent.width * (root.ramState.swapTotal > 0 ? Math.min(1, Math.max(0, root.ramState.swapUsed / root.ramState.swapTotal)) : 0)))
+              height: parent.height
+              radius: root.cornerTiny
+              color: root.cpuData
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Top memory processes ----
+        PanelSectionHeader {
+          text: "TOP MEMORY PROCESSES"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          width: parent.width
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+          Repeater {
+            // Always render exactly `topRamProcesses` row slots so the dropdown
+            // height stays fixed no matter how many processes are resident.
+            model: (function() { var a = []; for (var i = 0; i < root.topRamProcesses; i++) a.push(i); return a })()
+            Item {
+              required property int modelData
+              readonly property var info: root.ramTopProcs[modelData]
+              width: parent.parent.width
+              height: Style.space(22)
+              Row {
+                visible: modelData < root.ramTopProcs.length
+                width: parent.width
+                height: parent.height
+
+                // Name: fills the space left over by pinned pid + size columns.
+                Text {
+                  textFormat: Text.PlainText
+                  text: info ? info.comm : ""
+                  elide: Text.ElideRight
+                  width: Math.max(0, parent.width - Style.space(120))
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  text: info ? info.pid : ""
+                  width: Style.space(56)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Item {
+                  width: Style.space(4)
+                  height: 1
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(60)
+                  text: info ? Model.formatRss(info.rss / 1024) : ""
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+              }
+            }
+          }
+        }
+      }
+
       // ==================== Placeholder (other stats) =================
       Column {
-        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk")
+        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk" && root.activeStat.id !== "ram")
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(8)
         PanelSectionHeader {
@@ -1406,6 +2106,7 @@ Panel {
     if (root.activeStat && root.activeStat.id === "cpu") refreshCpu()
     else if (root.activeStat && root.activeStat.id === "gpu") refreshGpu()
     else if (root.activeStat && root.activeStat.id === "disk") refreshDisk()
+    else if (root.activeStat && root.activeStat.id === "ram") refreshRam()
   }
 
   function open() { root.controller.show() }
@@ -1434,5 +2135,6 @@ Panel {
     function openCpu(): void { root.openStatId("cpu") }
     function openGpu(): void { root.openStatId("gpu") }
     function openDisk(): void { root.openStatId("disk") }
+    function openRam(): void { root.openStatId("ram") }
   }
 }

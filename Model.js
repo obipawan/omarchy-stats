@@ -169,6 +169,18 @@ function formatPct(value) {
   return Math.round(v) + "%"
 }
 
+// PSI percentages can be far below 1% (e.g. 0.09%) and the kernel only reports
+// them to 2 decimals — a whole-percent round would show a misleading "0%".
+// Add precision in the range where it matters: integers above 10%, one decimal
+// between 1..10%, and two decimals below 1% so a real 0.09% stall is visible.
+function formatPsiPct(value) {
+  var v = parseFloat(value)
+  if (!isFinite(v) || v < 0) return "--"
+  if (v >= 10) return Math.round(v) + "%"
+  if (v >= 1) return (Math.round(v * 10) / 10) + "%"
+  return (Math.round(v * 100) / 100) + "%"
+}
+
 // ============================ GPU =========================================
 // Parses the tab-separated output of gpu.sh into a single object the panel
 // binds to. gpu.sh emits (mirroring cpu.sh's total/core/proc shape):
@@ -393,6 +405,19 @@ function formatGb(bytes) {
   return (Math.round(gb * 10) / 10) + "GB"
 }
 
+// Format a KiB value as a compact memory size for the RAM dropdown's
+// distribution section, e.g. "2.3GB", "512.0MB". Returns "--" out of range.
+function formatRamSize(kib) {
+  var v = parseFloat(kib)
+  if (!isFinite(v) || v < 0) return "--"
+  var mb = v / 1024          // KiB -> MiB
+  if (mb >= 1024) {
+    var gb = mb / 1024
+    return (Math.round(gb * 10) / 10) + "GB"
+  }
+  return Math.round(mb) + "MB"
+}
+
 // Format a throughput given in KB/s as a human rate: "512K/s", "3.4M/s",
 // "850B/s". Returns "--" for not available / negative.
 function formatRate(kb) {
@@ -401,6 +426,62 @@ function formatRate(kb) {
   if (v >= 1024) return (Math.round(v / 10.24) / 100) + "M/s"
   if (v >= 1) return Math.round(v) + "K/s"
   return Math.round(v * 1024) + "B/s"
+}
+
+// Format a per-process RSS (in MiB) as "NNNMB", or "x.xGB" once it crosses a
+// GiB, for the top-memory-process table. Returns "--" out of range.
+function formatRss(mib) {
+  var v = parseFloat(mib)
+  if (!isFinite(v) || v < 0) return "--"
+  if (v >= 1024) return (Math.round(v / 10.24) / 100) + "GB"
+  return Math.round(v) + "MB"
+}
+
+// ============================ RAM / SWAP ==================================
+// Parses the tab-separated output of ram.sh into a single object the panel
+// binds to. ram.sh emits (all KiB):
+//   total / free / available / used / system / buffers / cached / shared
+//   swapTotal / swapUsed / swapCached
+//   psiSome10 / psiFull10            (PSI memory pressure %, 10s window)
+//   proc\t<pid>\t<rssKiB>\t<name>
+// `used` excludes the reclaimable page cache (that's `system`), so
+// used + system + free == total. Returns { total, free, available, used,
+// system, swapTotal, swapUsed, psiSome10, psiFull10, ready,
+// procs:[{pid,rss,comm}] }.
+function parseRamOutput(raw) {
+  var lines = String(raw || "").split("\n")
+  var out = { total: -1, free: -1, available: -1, used: -1, system: -1,
+              buffers: -1, cached: -1, shared: -1,
+              swapTotal: -1, swapUsed: -1, swapCached: -1,
+              psiSome10: -1, psiFull10: -1,
+              ready: false, procs: [] }
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("\t")
+    if (parts.length < 2) continue
+    var kind = parts[0]
+    function rd() { var x = parseFloat(parts[1]); return isFinite(x) ? x : -1 }
+    if (kind === "total") out.total = rd()
+    else if (kind === "free") out.free = rd()
+    else if (kind === "available") out.available = rd()
+    else if (kind === "used") out.used = rd()
+    else if (kind === "system") out.system = rd()
+    else if (kind === "buffers") out.buffers = rd()
+    else if (kind === "cached") out.cached = rd()
+    else if (kind === "shared") out.shared = rd()
+    else if (kind === "swapTotal") out.swapTotal = rd()
+    else if (kind === "swapUsed") out.swapUsed = rd()
+    else if (kind === "swapCached") out.swapCached = rd()
+    else if (kind === "psiSome10") out.psiSome10 = rd()
+    else if (kind === "psiFull10") out.psiFull10 = rd()
+    else if (kind === "proc") {
+      var rss = parseFloat(parts[2] || "")
+      if (isFinite(rss))
+        out.procs.push({ pid: String(parts[1] || "").trim(), rss: Math.round(rss),
+                         comm: String(parts[3] || "").trim() })
+    }
+  }
+  out.ready = out.total > 0
+  return out
 }
 
 if (typeof module !== "undefined") {
@@ -416,6 +497,7 @@ if (typeof module !== "undefined") {
     averageValue: averageValue,
     normalize: normalize,
     formatPct: formatPct,
+    formatPsiPct: formatPsiPct,
     parseGpuOutput: parseGpuOutput,
     gpuSetup: gpuSetup,
     gpuToolFor: gpuToolFor,
@@ -427,6 +509,9 @@ if (typeof module !== "undefined") {
     normalizeIo: normalizeIo,
     topIoRows: topIoRows,
     formatGb: formatGb,
-    formatRate: formatRate
+    formatRate: formatRate,
+    formatRamSize: formatRamSize,
+    formatRss: formatRss,
+    parseRamOutput: parseRamOutput
   }
 }
