@@ -144,6 +144,16 @@ Panel {
   readonly property int gpuBarHeight: Style.bar.sizeHorizontal
   readonly property int gpuBarWidth: Style.space(34)
 
+  // The bar host draws an accent pill under/over a module slot while one of
+  // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
+  // to ~55% of the whole module slot — which sweeps under ALL stat icons at
+  // once and looks off. obi.stats paints its own per-icon active highlight on
+  // the clicked item, so shrink the host's pill to ~invisible. The hint must
+  // be > 0 (the bar treats 0 as "unset" and falls back to the big default),
+  // hence 1px.
+  readonly property real openPanelIndicatorWidth: 1
+  readonly property real openPanelIndicatorHeight: 1
+
   // Whether a stat renders as a live two-line % stack in the bar.
   function isLiveStat(stat) {
     if (!stat) return false
