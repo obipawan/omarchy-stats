@@ -333,10 +333,15 @@ Panel {
   }
 
   // ============================ GPU polling ==============================
+  // intel_gpu_top's default refresh window is 1000ms, which would block each
+  // poll for a full second and stretch the effective cadence to ~2-3x
+  // refreshSeconds. Pass a window that's a fraction of the poll interval so a
+  // run finishes inside one tick — same rule as cpu.sh's sample window.
+  readonly property int gpuSampleMs: Math.max(150, Math.round(root.refreshSeconds * 1000 / 3))
   function refreshGpu() {
     if (root.gpuPolling) return
     root.gpuPolling = true
-    gpuProc.command = [root.gpuScript]
+    gpuProc.command = [root.gpuScript, String(root.gpuSampleMs)]
     gpuProc.running = true
   }
 

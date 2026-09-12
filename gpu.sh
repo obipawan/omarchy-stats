@@ -28,7 +28,10 @@
 #            error    -> backend ran but returned nothing usable
 #
 # Usage:
-#   gpu.sh                    one-shot sample (best-effort, no windowing)
+#   gpu.sh                    one-shot sample (best-effort)
+#   gpu.sh [window-ms]        sample with an ~intel_gpu_top refresh window (ms);
+#                             default 200. Shorter finishes inside one poll tick
+#                             so the panel cadence tracks refreshSeconds.
 #   gpu.sh --doctor           print step-by-step setup instructions for the
 #                             detected GPU and exit
 #   gpu.sh --vendor           print just the vendor tag and exit
@@ -42,6 +45,11 @@ INTEL_GPU_TOOL="${INTEL_GPU_TOOL:-intel_gpu_top}"
 NVIDIA_SMI="${NVIDIA_SMI:-nvidia-smi}"
 ROCM_SMI="${ROCM_SMI:-rocm-smi}"
 RADEONTOP="${RADEONTOP:-radeontop}"
+
+# Optional intel_gpu_top refresh window (ms) from $1, used to keep each sample
+# inside one poll tick. Only a pure number is accepted; --doctor/--vendor etc.
+# fall through to the default.
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then INTEL_MS="${1}"; fi
 
 # ---- vendor detection ----------------------------------------------------
 # Prefer the DRM /sys device vendor IDs (fast, no lspci), fall back to lspci
@@ -126,13 +134,19 @@ backend_nvidia() {
 
 # intel_gpu_top -J emits a JSON object per refresh continuously; we capture
 # the FIRST object with a bounded timeout so a poll never hangs the shell.
+# Two things keep a run from blocking the poll cadence:
+#   - `$INTEL_MS` (the -s refresh period) is a fraction of the poll interval;
+#   - `-n 1` is REQUIRED: without it intel_gpu_top streams forever and never
+#     exits, so `timeout 1` would kill it after a full second on every poll,
+#     stretching GPU refreshes to ~refreshSeconds regardless of its value.
 backend_intel() {
   command -v "$INTEL_GPU_TOOL" >/dev/null 2>&1 || return 1
-  local json err busy
+  local json err busy ms
+  ms="${INTEL_MS:-200}"
   # Capture stderr separately: on perf_event_paranoid >= 2 (Arch default) the
   # tool needs CAP_PERFMON and otherwise dies with "Permission denied", which
   # we report as a distinct no-perm status instead of a vague error.
-  json=$(timeout 1 "$INTEL_GPU_TOOL" -J 2> /tmp/obi-intel-gpu-top.err || true)
+  json=$(timeout 1 "$INTEL_GPU_TOOL" -J -s "$ms" -n 1 2> /tmp/obi-intel-gpu-top.err || true)
   err=$(grep -iE 'permission denied|CAP_PERFMON' /tmp/obi-intel-gpu-top.err 2>/dev/null | head -1)
   rm -f /tmp/obi-intel-gpu-top.err
   if [ -z "$json" ]; then
