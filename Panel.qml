@@ -465,9 +465,11 @@ Panel {
       // Battery bar: on the left of the battery icon, two stacked lines —
       // line 1 = percentage, line 2 = time-to-full/empty. The icon uses
       // omarchy's battery set (tier-fills by charge level; while charging it's
-      // the bolt-in-battery variant). Everything is threshold-tinted (low
-      // charge = alarming). The two lines use tight spacing (0) so their
-      // vertical gap matches the CPU/GPU two-line stacks.
+      // the bolt-in-battery variant). The two lines stay plain theme text; ONLY
+      // the icon gets the charge-threshold color treatment (low = alarming), so
+      // the numbers stay readable while the icon signals the state. The two
+      // lines use tight spacing (0) so their vertical gap matches the CPU/GPU
+      // two-line stacks.
       //
       // Layout: the % and time lines live in a plain Column, and the icon is a
       // Text to its right in a Row. The Row hugs its content width so the icon
@@ -482,7 +484,7 @@ Panel {
             textFormat: Text.PlainText
             horizontalAlignment: Text.AlignHCenter
             text: Model.batteryPctText(root.batteryState.pct)
-            color: root.batteryColor(root.batteryState.pct)
+            color: root.cpuText
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Math.max(8, Style.font.caption - 1)
             font.bold: true
@@ -491,7 +493,7 @@ Panel {
             textFormat: Text.PlainText
             horizontalAlignment: Text.AlignHCenter
             text: root.batteryTimeText
-            color: root.batteryColor(root.batteryState.pct)
+            color: root.cpuText
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Math.max(7, Style.font.caption - 2)
             font.bold: true
