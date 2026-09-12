@@ -772,6 +772,35 @@ function batteryPctText(pct) {
   return Math.round(v) + "%"
 }
 
+// ========================= POWER PROFILES ================================
+// Parses `omarchy-powerprofiles-list --active-state` output (one profile per
+// line, "name<TAB>0|1" where 1 marks the active profile) into
+// { profiles: [name, ...], activeProfile: "name" }. Empty payloads stay empty
+// so the panel can decide whether to keep last-known-good data.
+function parsePowerProfiles(raw) {
+  var out = { profiles: [], activeProfile: "" }
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (!line) continue
+    var parts = line.split("\t")
+    if (!parts[0]) continue
+    out.profiles.push(parts[0])
+    if (parts[1] === "1") out.activeProfile = parts[0]
+  }
+  return out
+}
+
+// Omarchy's power-profile glyphs (copied byte-for-byte from omarchy.power's
+// panels/power/Model.js, profileIcon): power-saver / balanced / performance
+// each have their own icon, with a generic fallback for anything else.
+function powerProfileIcon(name) {
+  if (name === "power-saver") return "󰌪"
+  if (name === "balanced") return "󰊚"
+  if (name === "performance") return "󰓅"
+  return "󰂄"
+}
+
 // ============================ BATTERY ICONS ==============================
 // Omarchy's battery icon set (copied byte-for-byte from omarchy.power's
 // panels/power/Model.js). Two parallel 10-tier Material Design battery glyph
@@ -836,6 +865,8 @@ if (typeof module !== "undefined") {
     formatBatteryTime: formatBatteryTime,
     formatWatts: formatWatts,
     formatMillis: formatMillis,
-    batteryPctText: batteryPctText
+    batteryPctText: batteryPctText,
+    parsePowerProfiles: parsePowerProfiles,
+    powerProfileIcon: powerProfileIcon
   }
 }

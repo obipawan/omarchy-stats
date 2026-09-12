@@ -333,6 +333,64 @@ Panel {
       ? (batteryState.discharging ? "On battery" : "On AC")
       : "No battery"
 
+  // ---- Power profiles (dropdown) ----------------------------------------
+  // Available power-profiles and the active one, from `omarchy-powerprofiles-list
+  // --active-state`, plus a cursor for keyboard navigation among them. Fetched
+  // on-demand while the battery dropdown is open (see refreshPowerProfiles).
+  property var powerProfiles: []
+  property string activePowerProfile: ""
+  property int profileIndex: 0
+  property bool cursorActive: false
+
+  function refreshPowerProfiles() {
+    if (profilesProc.running) return
+    profilesProc.running = true
+  }
+
+  function onPowerProfilesFinished(raw) {
+    var parsed = Model.parsePowerProfiles(raw)
+    // Preserve the last known list across a transient empty payload so the
+    // buttons don't blink out mid-transition.
+    if (parsed.profiles.length === 0) return
+    root.powerProfiles = parsed.profiles
+    root.activePowerProfile = parsed.activeProfile
+    var idx = parsed.profiles.indexOf(parsed.activeProfile)
+    root.profileIndex = idx >= 0 ? idx : 0
+  }
+
+  function setPowerProfile(profile) {
+    if (!profile || setProfileProc.running) return
+    // Same policy as omarchy.power: remember the profile per ac/battery use.
+    setProfileProc.command = ["omarchy-powerprofiles-set",
+      root.batteryState.discharging ? "battery" : "ac", profile]
+    setProfileProc.running = true
+  }
+
+  // Keyboard cursor: move between profiles by delta, wrap around, and apply.
+  function selectProfileByDelta(delta) {
+    if (root.powerProfiles.length === 0) return
+    root.profileIndex = (root.profileIndex + delta + root.powerProfiles.length)
+      % root.powerProfiles.length
+  }
+  function activateSelectedProfile() {
+    if (root.profileIndex < 0 || root.profileIndex >= root.powerProfiles.length) return
+    root.setPowerProfile(root.powerProfiles[root.profileIndex])
+  }
+
+  Process {
+    id: profilesProc
+    command: ["omarchy-powerprofiles-list", "--active-state"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onPowerProfilesFinished(text)
+    }
+  }
+
+  Process {
+    id: setProfileProc
+    onExited: root.refreshPowerProfiles()
+  }
+
   // ---- Network state ----------------------------------------------------
   // Snapshot of the aggregate rates (for the bar + graph), cumulative totals
   // and connection details from net.sh, plus per-process TCP up/down. `ready`
@@ -738,6 +796,7 @@ Panel {
   function openStat(stat, button) {
     root.activeStat = stat
     root.activeButton = button || root.statButtons[stat.id]
+    root.cursorActive = false
     // Skip a redundant full-sample kick when the last combined sample is still
     // fresh — the always-on timer keeps bar + dropdown data current, so opening
     // right after a tick need not re-run all six samplers. Kick only if the
@@ -746,6 +805,10 @@ Panel {
     var now = Date.now() / 1000
     if (now - root.lastSampleAt >= Math.max(1.0, root.refreshSeconds * 0.5)) root.sampleRefresh()
     root.syncProcsPolling()
+    if (stat.id === "battery") {
+      root.cursorActive = false
+      root.refreshPowerProfiles()
+    }
     root.controller.show()
   }
 
@@ -1476,8 +1539,17 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
 
-      onMoveRequested: function(dx, dy) { /* reserved for per-stat navigation */ }
-      onActivateRequested: root.close()
+      onMoveRequested: function(dx, dy) {
+        // Power-profile picker is keyboard-navigable (left/right wraps) only
+        // while the battery dropdown with loaded profiles is open; all other
+        // stats keep the reserved no-op.
+        if (root.activeStat && root.activeStat.id === "battery" && root.powerProfiles.length > 0) {
+          if (!root.cursorActive) { root.cursorActive = true; return }
+          if (dx !== 0) root.selectProfileByDelta(dx)
+          else if (dy !== 0) root.selectProfileByDelta(dy)
+        }
+      }
+      onActivateRequested: root.cursorActive ? root.activateSelectedProfile() : root.close()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
     }
@@ -2703,6 +2775,55 @@ Panel {
 
           PanelSeparator {
             foreground: root.cpuText
+          }
+
+          // ---- Power profile picker ---------------------------------------
+          // Same look, feel and click action as omarchy.power's profile row:
+          // one bordered button per available profile, the active one shown
+          // filled, hover/keyboard-cursor highlighting the target, and a click
+          // (or Enter) applying it per the current ac/battery state.
+          PanelSectionHeader {
+            text: "POWER PROFILE"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+
+          Row {
+            id: powerProfileRow
+            width: parent.width
+            spacing: Style.space(6)
+
+            readonly property real cellWidth: root.powerProfiles.length > 0
+              ? (width - spacing * (root.powerProfiles.length - 1)) / root.powerProfiles.length
+              : 0
+
+            Repeater {
+              model: root.powerProfiles
+              Button {
+                required property var modelData
+                required property int index
+                width: powerProfileRow.cellWidth
+                iconText: Model.powerProfileIcon(String(modelData))
+                iconSize: Style.font.title
+                text: String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
+                fontSize: Style.font.bodySmall
+                foreground: root.cpuText
+                fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+                bordered: true
+                active: root.activePowerProfile === modelData
+                hasCursor: root.cursorActive && root.profileIndex === index
+                onClicked: root.setPowerProfile(modelData)
+                onHovered: function(h) {
+                  if (h) {
+                    root.cursorActive = true
+                    root.profileIndex = index
+                  }
+                }
+              }
+            }
           }
 
           // ---- Battery details: one stat per row (label left / value right) ----
