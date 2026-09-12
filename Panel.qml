@@ -17,13 +17,18 @@ import "Model.js" as Model
 //
 // CPU is wired up end to end: a periodic Process samples cpu.sh, the result is
 // shown as an aggregate %, per-core bars, the top-N heavy processes, and a
-// configurable history graph. The other stats still show a placeholder.
+// configurable history graph. Disk is wired too: a two-line F:/U: bar item plus
+// a dropdown with a dual-axis read/write I/O history and top I/O processes.
+// The other stats (RAM, battery, network) still show a placeholder.
 //
 // Per-widget settings come from the shell.json entry (see `setting()`), e.g.:
-//   topProcesses       default 8     how many heavy processes to list
-//   refreshSeconds     default 2     base sample cadence (CPU + GPU)
+//   topProcesses       default 8     how many heavy processes to list (CPU)
+//   refreshSeconds     default 2     base sample cadence (CPU + GPU + disk)
 //   cpuRefreshSeconds  default base  CPU poll period, independent override
 //   gpuRefreshSeconds  default base  GPU poll period, independent override
+//   fileioRefreshSeconds default base  disk I/O poll period, independent override
+//   diskMount          default /     filesystem monitored for space
+//   diskTopProcesses   default 5     rows in the disk top-I/O table
 //   historyMinutes     default 60    length of the usage-history window
 // Set them with: omarchy bar set obi.stats <key> <value>
 Panel {
@@ -57,6 +62,7 @@ Panel {
   // ---- CPU config -------------------------------------------------------
   readonly property string cpuScript: root.pluginDir + "/cpu.sh"
   readonly property string gpuScript: root.pluginDir + "/gpu.sh"
+  readonly property string diskScript: root.pluginDir + "/disk.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
   // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
   readonly property string pluginDir:
@@ -69,6 +75,13 @@ Panel {
   readonly property int refreshSeconds: Math.max(1, parseInt(setting("refreshSeconds", 2), 10) || 2)
   readonly property int cpuRefreshSeconds: Math.max(1, parseInt(setting("cpuRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
   readonly property int gpuRefreshSeconds: Math.max(1, parseInt(setting("gpuRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
+  // Disk I/O poll cadence — independent of the space stat they're one sampler,
+  // so this one cadence drives both (defaults to refreshSeconds).
+  readonly property int fileioRefreshSeconds: Math.max(1, parseInt(setting("fileioRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
+  // Filesystem the disk bar/dropdown monitor for space (e.g. "/", "/home").
+  readonly property string diskMount: setting("diskMount", "/")
+  // Rows in the disk "top I/O processes" table (independent of CPU topProcesses).
+  readonly property int diskTopProcesses: Math.max(1, parseInt(setting("diskTopProcesses", 5), 10) || 5)
   readonly property int historySeconds: Math.max(30, parseInt(setting("historyMinutes", 60), 10) || 60) * 60
 
   // Usage tint thresholds, as percent. Settings (e.g. `omarchy bar set
@@ -135,6 +148,28 @@ Panel {
       ? Model.formatBytes(gpuState.memUsed) + " / " + Model.formatBytes(gpuState.memTotal)
       : "--"
 
+  // ---- Disk state ------------------------------------------------------
+  // Space digits (mount/fs*) come from df for the monitored filesystem; the
+  // aggregate read/write rates from /proc/diskstats feed the I/O history graph
+  // and procs holds top per-process read/write rates. `ready` means a sample
+  // parsed (I/O always parses; space may be unknown until df runs).
+  property var diskState: ({ mount: "", fsTotal: -1, fsFree: -1, fsUsed: -1,
+                             fsUsePct: -1, read: -1, write: -1, ready: false, procs: [] })
+  property var diskHistory: []
+  property bool diskPolling: false
+
+  readonly property var diskTopIo: Model.topIoRows(diskState.procs, diskTopProcesses)
+  // I/O history: a column per bucket holding the read+write pair, newest right.
+  readonly property var diskIoWindow: Model.scrollIoWindow(diskHistory, historyBuckets)
+  // Heights normalized to 0..1 against the shared read+write max so the two
+  // bars of a column are comparable and the plot doesn't rescale each tick.
+  readonly property var diskIoHeights: Model.normalizeIo(diskIoWindow)
+  // Two-line bar text: "F: <free>" / "U: <used>" (same font, per the disk item).
+  readonly property string diskFreeText: "F: " + Model.formatGb(diskState.fsFree)
+  readonly property string diskUsedText: "U: " + Model.formatGb(diskState.fsUsed)
+  // Used-fraction 0..1 for a space bar, 0 when unknown.
+  readonly property real diskUsedPct: diskState.fsTotal > 0 ? Math.min(1, Math.max(0, diskState.fsUsed / diskState.fsTotal)) : 0
+
   // ---- Bar widget sizing ----
   // CPU and GPU items are two-line text stacks (label over %) instead of an
   // icon, so they need a bit more height than the icon slot and enough width
@@ -143,6 +178,10 @@ Panel {
   readonly property int cpuBarWidth: Style.space(34)
   readonly property int gpuBarHeight: Style.bar.sizeHorizontal
   readonly property int gpuBarWidth: Style.space(34)
+  // Disk shows "F: <size>" / "U: <size>" (two text lines) so it needs a bit
+  // more width than the CPU/GPU label-over-% stack to fit e.g. "F: 99.9GB".
+  readonly property int diskBarHeight: Style.bar.sizeHorizontal
+  readonly property int diskBarWidth: Style.space(48)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -158,18 +197,20 @@ Panel {
   function isLiveStat(stat) {
     if (!stat) return false
     var id = String(stat.id)
-    return id === "cpu" || id === "gpu"
+    return id === "cpu" || id === "gpu" || id === "disk"
   }
 
   function barItemWidth(stat) {
     if (stat && String(stat.id) === "cpu") return root.cpuBarWidth
     if (stat && String(stat.id) === "gpu") return root.gpuBarWidth
+    if (stat && String(stat.id) === "disk") return root.diskBarWidth
     return Style.bar.iconSlot
   }
 
   function barItemHeight(stat) {
     if (stat && String(stat.id) === "cpu") return root.cpuBarHeight
     if (stat && String(stat.id) === "gpu") return root.gpuBarHeight
+    if (stat && String(stat.id) === "disk") return root.diskBarHeight
     return Style.bar.sizeHorizontal
   }
 
@@ -251,10 +292,12 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
       spacing: Style.space(0)
 
+      // For CPU/GPU: label over the live %. For disk: "F: <free>" over
+      // "U: <used>" (two lines, same font and weight).
       Text {
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: stat.label.toLowerCase()
+        text: stat.id === "disk" ? root.diskFreeText : stat.label.toLowerCase()
         color: root.cpuText
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.caption
@@ -264,8 +307,8 @@ Panel {
         id: pctLine
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
-        text: root.livePctText(stat.id)
-        color: root.livePctColor(stat.id)
+        text: stat.id === "disk" ? root.diskUsedText : root.livePctText(stat.id)
+        color: stat.id === "disk" ? root.cpuText : root.livePctColor(stat.id)
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.caption
         font.bold: true
@@ -281,6 +324,9 @@ Panel {
       if (root.gpuState.ready) return stat.label + " " + Model.formatPct(root.gpuState.total)
       return stat.label + " — " + (root.gpuState.setup ? root.gpuState.setup.title : "setup needed")
     }
+    if (stat.id === "disk")
+      return stat.label + " — " + Model.formatGb(root.diskState.fsUsed) + " used / " +
+             Model.formatGb(root.diskState.fsFree) + " free"
     return stat.label
   }
 
@@ -302,6 +348,7 @@ Panel {
     root.activeButton = button || root.statButtons[stat.id]
     if (stat.id === "cpu") refreshCpu()
     else if (stat.id === "gpu") refreshGpu()
+    else if (stat.id === "disk") refreshDisk()
     root.controller.show()
   }
 
@@ -417,6 +464,44 @@ Panel {
     id: gpuInstallProc
   }
 
+  // ============================ Disk polling ============================
+  // One sampler returns space (for the bar) and I/O rates (for the graph +
+  // processes). Sample window is a fraction of the poll interval so each run
+  // finishes inside one tick — same rule as cpu/gpu sample windows.
+  readonly property string diskSampleWindow:
+    String(Math.max(0.2, Math.round(root.fileioRefreshSeconds * 0.4 * 100) / 100))
+  function refreshDisk() {
+    if (root.diskPolling) return
+    root.diskPolling = true
+    diskProc.command = [root.diskScript, root.diskSampleWindow, root.diskMount]
+    diskProc.running = true
+  }
+
+  Process {
+    id: diskProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onDiskFinished(text)
+    }
+  }
+
+  function onDiskFinished(raw) {
+    root.diskPolling = false
+    var parsed = Model.parseDiskOutput(raw)
+    root.diskState = parsed
+    var now = Date.now() / 1000
+    // Only a live sample feeds the I/O history graph.
+    if (parsed.ready) root.diskHistory = Model.appendIoHistory(root.diskHistory, now, parsed.read, parsed.write, root.historySeconds)
+  }
+
+  Timer {
+    id: diskPollTimer
+    interval: root.fileioRefreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: { if (!root.diskPolling) root.refreshDisk() }
+  }
+
   // Hero text: for CPU the title is "CPU CORES"; for GPU it's the matching
   // "GPU CORES" (the vendor labels it engines, but "CORES" keeps the pair
   // visually consistent). Neither repeats the stat label in meta — other stats
@@ -426,6 +511,7 @@ Panel {
     if (!root.activeStat) return ""
     if (root.activeStat.id === "cpu") return "CPU CORES"
     if (root.activeStat.id === "gpu") return "GPU CORES"
+    if (root.activeStat.id === "disk") return "DISK I/O"
     return root.activeStat.label
   }
 
@@ -435,6 +521,12 @@ Panel {
     if (root.activeStat.id === "gpu") {
       if (root.gpuState.ready) return root.gpuState.vendor.toUpperCase()
       return root.gpuState.setup ? root.gpuState.setup.title : "setup needed"
+    }
+    if (root.activeStat.id === "disk") {
+      var d = root.diskState
+      return (d.fsUsed >= 0 ? "U: " + Model.formatGb(d.fsUsed) + " used" : "")
+           + (d.fsUsed >= 0 && d.fsFree >= 0 ? " · " : "")
+           + (d.fsFree >= 0 ? "F: " + Model.formatGb(d.fsFree) + " free" : "")
     }
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
@@ -959,9 +1051,263 @@ Panel {
         }
       }
 
+      // ==================== Disk body ==================================
+      Column {
+        visible: root.activeStat && root.activeStat.id === "disk"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(10)
+
+        // Aggregate row: WRITE (positive) and READ (negative) rates sit on
+        // the same baseline as the dual-axis graph below.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            text: "WRITE"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            id: diskWriteVal
+            textFormat: Text.PlainText
+            text: Model.formatRate(root.diskState.write)
+            color: root.cpuData
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "READ"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            anchors.baseline: diskWriteVal.baseline
+            text: Model.formatRate(root.diskState.read)
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+        }
+
+        // Space used/total (from df) + a horizontal used bar, only when the
+        // monitored filesystem reported a size.
+        Row {
+          visible: root.diskState.fsTotal > 0
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            text: "SPACE"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: Model.formatGb(root.diskState.fsUsed) + " / " + Model.formatGb(root.diskState.fsTotal)
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: Model.formatPct(root.diskState.fsUsePct)
+            color: root.usageColor(root.diskState.fsUsePct)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+        }
+
+        Item {
+          visible: root.diskState.fsTotal > 0
+          width: parent.width
+          height: Style.space(6)
+          Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+            radius: root.cornerTiny
+          }
+          Rectangle {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.max(Style.space(1), Math.round(parent.width * root.diskUsedPct))
+            height: parent.height
+            radius: root.cornerTiny
+            color: root.cpuData
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- I/O history ---- dual-axis: positive y = write, negative y = read.
+        PanelSectionHeader {
+          text: "I/O HISTORY"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
+
+        Item {
+          width: parent.width
+          height: Style.space(70)
+          clip: true
+          Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
+          }
+          // Zero line at the vertical middle.
+          Rectangle {
+            width: parent.width
+            height: 1
+            y: parent.height / 2
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+          }
+          Row {
+            id: ioGraphRow
+            anchors.fill: parent
+            spacing: Style.space(1)
+            Repeater {
+              model: root.diskIoHeights
+              Item {
+                required property var modelData
+                width: Style.space(3)
+                height: ioGraphRow.height
+                // Write bar grows UP from the zero line (positive).
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  y: parent.height / 2 - Math.max(1, Math.round(modelData.write * parent.height / 2))
+                  width: Style.space(3)
+                  height: Math.max(1, Math.round(modelData.write * parent.height / 2))
+                  color: root.cpuData
+                }
+                // Read bar grows DOWN from the zero line (negative).
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  y: parent.height / 2
+                  width: Style.space(3)
+                  height: Math.max(1, Math.round(modelData.read * parent.height / 2))
+                  color: root.cpuDim
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Top I/O processes ----
+        PanelSectionHeader {
+          text: "TOP I/O PROCESSES"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          width: parent.width
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+          Repeater {
+            model: root.diskTopIo
+            Item {
+              required property var modelData
+              width: parent.parent.width
+              height: Style.space(22)
+              Row {
+                width: parent.width
+                height: parent.height
+
+                // Name: fills the space left over by pinned pid + read + write.
+                Text {
+                  textFormat: Text.PlainText
+                  text: modelData.comm
+                  elide: Text.ElideRight
+                  width: Math.max(0, parent.width - Style.space(180))
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  text: modelData.pid
+                  width: Style.space(52)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Item {
+                  width: Style.space(4)
+                  height: 1
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(60)
+                  text: Model.formatRate(modelData.read)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Item {
+                  width: Style.space(4)
+                  height: 1
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(56)
+                  text: Model.formatRate(modelData.write)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuData
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+              }
+            }
+          }
+          Text {
+            textFormat: Text.PlainText
+            visible: root.diskTopIo.length === 0
+            text: "Collecting…"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
       // ==================== Placeholder (other stats) =================
       Column {
-        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu")
+        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk")
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(8)
         PanelSectionHeader {
@@ -986,6 +1332,7 @@ Panel {
   function refresh() {
     if (root.activeStat && root.activeStat.id === "cpu") refreshCpu()
     else if (root.activeStat && root.activeStat.id === "gpu") refreshGpu()
+    else if (root.activeStat && root.activeStat.id === "disk") refreshDisk()
   }
 
   function open() { root.controller.show() }
@@ -1013,5 +1360,6 @@ Panel {
     function openStat(id: string): void { root.openStatId(id) }
     function openCpu(): void { root.openStatId("cpu") }
     function openGpu(): void { root.openStatId("gpu") }
+    function openDisk(): void { root.openStatId("disk") }
   }
 }

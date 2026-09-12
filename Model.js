@@ -278,6 +278,131 @@ function formatTemp(celsius) {
   return Math.round(v) + "°C"
 }
 
+// ============================ DISK / I/O =================================
+// Parses the tab-separated output of disk.sh into a single object the panel
+// binds to. disk.sh emits (mirroring cpu.sh's shape):
+//   mount\t<path>
+//   fsTotal\t<bytes>
+//   fsFree\t<bytes>
+//   fsUsed\t<bytes>
+//   fsUsePct\t<percent>
+//   read\t<KB/s>       aggregate disk read rate
+//   write\t<KB/s>      aggregate disk write rate
+//   proc\t<pid>\t<readKB/s>\t<writeKB/s>\t<comm>   top by read+write, desc
+// Returns { mount, fsTotal, fsFree, fsUsed, fsUsePct, read, write, ready,
+//           procs:[{pid,read,write,comm}] }.
+// `ready` is true when at least a read/write sample was produced.
+function parseDiskOutput(raw) {
+  var lines = String(raw || "").split("\n")
+  var out = { mount: "", fsTotal: -1, fsFree: -1, fsUsed: -1, fsUsePct: -1,
+              read: -1, write: -1, ready: false, procs: [] }
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("\t")
+    if (parts.length < 2) continue
+    var kind = parts[0]
+    var v
+    if (kind === "mount") out.mount = String(parts[1] || "")
+    else if (kind === "fsTotal") { v = parseFloat(parts[1]); if (isFinite(v)) out.fsTotal = v }
+    else if (kind === "fsFree") { v = parseFloat(parts[1]); if (isFinite(v)) out.fsFree = v }
+    else if (kind === "fsUsed") { v = parseFloat(parts[1]); if (isFinite(v)) out.fsUsed = v }
+    else if (kind === "fsUsePct") { v = parseFloat(parts[1]); if (isFinite(v)) out.fsUsePct = Math.round(v * 10) / 10 }
+    else if (kind === "read") { v = parseFloat(parts[1]); if (isFinite(v)) out.read = Math.round(v * 10) / 10 }
+    else if (kind === "write") { v = parseFloat(parts[1]); if (isFinite(v)) out.write = Math.round(v * 10) / 10 }
+    else if (kind === "proc") {
+      var r = parseFloat(parts[2] || "")
+      var w = parseFloat(parts[3] || "")
+      if (isFinite(r) && isFinite(w))
+        out.procs.push({ pid: String(parts[1] || "").trim(),
+                         read: Math.round(r * 10) / 10, write: Math.round(w * 10) / 10,
+                         comm: String(parts[4] || "").trim() })
+    }
+  }
+  out.ready = out.read >= 0 && out.write >= 0
+  return out
+}
+
+// History ring buffer for the I/O graph. Appends {time, read, write} and drops
+// anything older than `maxSeconds` — the dual-axis read/write analogue of
+// appendHistory.
+function appendIoHistory(history, nowSeconds, readKBs, writeKBs, maxSeconds) {
+  var h = Array.isArray(history) ? history.slice() : []
+  var max = Math.max(1, parseInt(maxSeconds, 10) || 3600)
+  h.push({ time: Number(nowSeconds) || 0, read: Number(readKBs) || 0, write: Number(writeKBs) || 0 })
+  var cutoff = (Number(nowSeconds) || 0) - max
+  while (h.length > 0 && h[0].time < cutoff) h.shift()
+  return h
+}
+
+// streaming timeline analogue of scrollWindow for two values per sample.
+// Returns exactly `buckets` {read, write} columns, NEWEST pinned at the far
+// right; empty leading columns are 0. Pure and node-testable.
+function scrollIoWindow(history, buckets) {
+  var h = Array.isArray(history) ? history : []
+  var n = Math.max(1, parseInt(buckets, 10) || 1)
+  var fill = Math.min(n, h.length)
+  var start = h.length - fill
+  var out = []
+  for (var i = 0; i < n; i++) out.push({ read: 0, write: 0 })
+  for (var k = 0; k < fill; k++) {
+    var e = h[start + k]
+    out[n - fill + k] = { read: Number(e.read) || 0, write: Number(e.write) || 0 }
+  }
+  return out
+}
+
+// Normalize an io window (list of {read, write}) to 0..1 against the SHARED
+// max of read and write, so the two bars of a column are comparable and the
+// plot doesn't rescale every tick. Empty/zero window -> 0.
+function normalizeIo(ioWindow) {
+  var v = Array.isArray(ioWindow) ? ioWindow : []
+  var max = 0
+  for (var i = 0; i < v.length; i++) {
+    var r = Math.abs(Number(v[i].read) || 0)
+    var w = Math.abs(Number(v[i].write) || 0)
+    if (r > max) max = r
+    if (w > max) max = w
+  }
+  if (max <= 0) max = 1
+  var out = []
+  for (var j = 0; j < v.length; j++)
+    out.push({ read: (Number(v[j].read) || 0) / max, write: (Number(v[j].write) || 0) / max })
+  return out
+}
+
+// Keep the newest `limit` I/O rows. disk.sh sends all processes that did any
+// I/O, sorted desc by read+write; this caps to the configured number and
+// drops purely-idle rows.
+function topIoRows(procs, limit) {
+  var rows = Array.isArray(procs) ? procs : []
+  var n = Math.max(1, parseInt(limit, 10) || rows.length)
+  var trimmed = rows.slice(0, Math.min(n, rows.length))
+  return trimmed.filter(function(p) {
+    var r = Number(p && p.read) || 0
+    var w = Number(p && p.write) || 0
+    return (r > 0 || w > 0) || String(p && p.comm || "") !== ""
+  })
+}
+
+// Format a byte count as a compact disk size for the two-line bar item, e.g.
+// "50GB", "8.2GB". Returns "--" out of range / not available.
+function formatGb(bytes) {
+  var v = parseFloat(bytes)
+  if (!isFinite(v) || v < 0) return "--"
+  var gb = v / (1024 * 1024 * 1024)
+  if (gb >= 99.95) return Math.round(gb) + "GB"
+  return (Math.round(gb * 10) / 10) + "GB"
+}
+
+// Format a throughput given in KB/s as a human rate: "512K/s", "3.4M/s",
+// "850B/s". Returns "--" for not available / negative.
+function formatRate(kb) {
+  var v = parseFloat(kb)
+  if (!isFinite(v) || v < 0) return "--"
+  if (v >= 1024) return (Math.round(v / 10.24) / 100) + "M/s"
+  if (v >= 1) return Math.round(v) + "K/s"
+  return Math.round(v * 1024) + "B/s"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     statDefinitions: statDefinitions,
@@ -295,6 +420,13 @@ if (typeof module !== "undefined") {
     gpuSetup: gpuSetup,
     gpuToolFor: gpuToolFor,
     formatBytes: formatBytes,
-    formatTemp: formatTemp
+    formatTemp: formatTemp,
+    parseDiskOutput: parseDiskOutput,
+    appendIoHistory: appendIoHistory,
+    scrollIoWindow: scrollIoWindow,
+    normalizeIo: normalizeIo,
+    topIoRows: topIoRows,
+    formatGb: formatGb,
+    formatRate: formatRate
   }
 }

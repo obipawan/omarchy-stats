@@ -23,8 +23,18 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
   - A one-click **"Install & verify"** button in that setup card opens your
     default terminal, installs the detected GPU's tool, and runs the doctor, so
     setup stays point-and-click.
-- Disk, RAM, Battery, Network — bar items present; dropdowns are placeholders
-  for now (next steps).
+- Disk — fully wired:
+  - A two-line `F: <free>` / `U: <used>` text in the bar (same font), showing
+    free and used space on the monitored filesystem, plus a live tooltip.
+  - A dropdown with a **dual-axis I/O history graph**: positive y is disk write
+    throughput, negative y is disk read throughput (both KB/s), one live sample
+    per column.
+  - A **top I/O processes** table (name · pid · read KB/s · write KB/s).
+  - Aggregate READ/WRITE rates and a used-space bar (used / total + %).
+  - All from `df` + `/proc/diskstats` + `/proc/<pid>/io` — no `iotop`/`iostat`/
+    `pidstat` dependency.
+- Disk, RAM, Battery, Network — Disk is wired above; RAM, Battery and Network
+  bar items are present; their dropdowns are placeholders for now (next steps).
 
 ## Install
 
@@ -41,14 +51,14 @@ Omarchy clones the repo, validates `manifest.json`, and installs it under
 omarchy bar put obi.stats --section center
 ```
 
-> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`) and the install helper
-> (`gpu-install.sh`) must be executable. Git preserves the executable bits set
-> in this repo.
+> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`, `disk.sh`) and the
+> install helper (`gpu-install.sh`) must be executable. Git preserves the
+> executable bits set in this repo.
 
 ### Manual / from source
 
 Copy the repository contents into `~/.config/omarchy/plugins/obi.stats/`
-(`chmod +x cpu.sh gpu.sh gpu-install.sh`), then `omarchy restart shell`.
+(`chmod +x cpu.sh gpu.sh gpu-install.sh disk.sh`), then `omarchy restart shell`.
 
 ## Configuration
 
@@ -59,6 +69,9 @@ and writable via `omarchy bar set`:
 omarchy bar set obi.stats refreshSeconds      2   # base sample period (fallback)
 omarchy bar set obi.stats cpuRefreshSeconds   2   # CPU poll period (defaults to base)
 omarchy bar set obi.stats gpuRefreshSeconds   2   # GPU poll period (defaults to base)
+omarchy bar set obi.stats fileioRefreshSeconds 2  # disk I/O poll period (defaults to base)
+omarchy bar set obi.stats diskMount           /   # filesystem monitored for space
+omarchy bar set obi.stats diskTopProcesses    5   # rows in the disk top-I/O table
 omarchy bar set obi.stats historyMinutes     60   # history graph window
 omarchy bar set obi.stats topProcesses        8   # rows in the process table
 omarchy bar set obi.stats calmLimit           30  # usage color tier: below = calm
@@ -71,11 +84,14 @@ to different values and each stat samples on its own cadence (e.g. CPU every
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `refreshSeconds` | 2 | base sample cadence (fallback for both stats) |
+| `refreshSeconds` | 2 | base sample cadence (fallback for all stats) |
 | `cpuRefreshSeconds` | = refreshSeconds | CPU poll period (independent override) |
 | `gpuRefreshSeconds` | = refreshSeconds | GPU poll period (independent override) |
+| `fileioRefreshSeconds` | = refreshSeconds | disk I/O + space poll period (independent override) |
+| `diskMount` | `/` | filesystem the disk stat monitors for space |
+| `diskTopProcesses` | 5 | rows in the disk top-I/O table |
 | `historyMinutes` | 60 | how long the moving graph window spans |
-| `topProcesses` | 8 | how many heavy processes to list |
+| `topProcesses` | 8 | how many heavy processes to list (CPU) |
 | `calmLimit` / `mildLimit` | 30 / 60 | usage-coloring thresholds |
 
 The CPU `%` color maps to three **semantic theme roles** so it stays cohesive
@@ -91,6 +107,7 @@ Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (aggregate, per-core, per-process)
 gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
 gpu-install.sh  one-click terminal helper behind the setup card's install button
+disk.sh         df + /proc diskstats + /proc/<pid>/io sampler (space + I/O rates)
 ```
 
 - `Panel.qml` is the bar-widget entry point *and* the dropdown host — one widget
@@ -105,6 +122,10 @@ gpu-install.sh  one-click terminal helper behind the setup card's install button
   `proc` schema. `gpu.sh --doctor` prints step-by-step setup for the detected
   GPU. Run `omarchy-shell obi.stats openGpu` to see the panel's setup guidance
   when the tool is missing.
+- `disk.sh` reads `df` (space) and `/proc/diskstats` + `/proc/<pid>/io` (whole-disk
+  and per-process read/write rates) and prints tab-separated `mount`/`fs*`/
+  `read`/`write`/`proc` lines. Run `omarchy-shell obi.stats openDisk` to open
+  the disk dropdown's read/write history and top-I/O-processes table.
 - `Model.js` parses the sampler output and implements the scrolling history
   window and process-table caps as pure functions (test with `node`).
 
