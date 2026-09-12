@@ -577,7 +577,10 @@ Panel {
         Text {
           textFormat: Text.PlainText
           text: root.batteryIconGlyph()
-          color: root.batteryColor(root.batteryState.pct)
+          // While charging, always use the calm state color no matter how low
+          // the charge is; only the discharging icon carries the urgent/accent
+          // threshold tint (low charge = alarming).
+          color: root.batteryState.charging ? root.cpuText : root.batteryColor(root.batteryState.pct)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Math.max(19, Style.font.caption + 9)
           font.bold: true
