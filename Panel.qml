@@ -459,9 +459,10 @@ Panel {
         font.bold: true
       }
 
-      // Battery: one line — time-to-full/empty, a filled battery glyph with the
-      // % overlaid inside it, and a small bolt while charging. The whole line
-      // is tinted by the (reversed) charge thresholds: low charge = alarming.
+      // Battery: one line — time-to-full/empty, a battery icon, the % and a
+      // bolt while charging, all threshold-tinted (low charge = alarming).
+      // The % sits as normal text beside the icon (not overlaid) so it stays
+      // legible at bar size; see the comment on batteryBarWidth.
       Row {
         visible: stat.id === "battery"
         Layout.alignment: Qt.AlignHCenter
@@ -475,34 +476,23 @@ Panel {
           font.pixelSize: Math.max(8, Style.font.caption - 1)
           font.bold: true
         }
-        // The battery icon with the % overlaid INSIDE it: a wider box holding
-        // the filled glyph as the "shell" and a smaller % sitting on top of its
-        // body. Sized to the glyph so the number lands mid-battery.
-        Item {
-          width: Style.space(22)
-          height: parent.height
-          Text {
-            anchors.fill: parent
-            textFormat: Text.PlainText
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            text: root.batteryIconGlyph()
-            color: root.batteryColor(root.batteryState.pct)
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Math.max(13, Style.font.caption + 3)
-            font.bold: true
-          }
-          Text {
-            anchors.fill: parent
-            textFormat: Text.PlainText
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            text: Model.batteryPctText(root.batteryState.pct)
-            color: root.cpuText
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Math.max(7, Style.font.caption - 4)
-            font.bold: true
-          }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: root.batteryIconGlyph()
+          color: root.batteryColor(root.batteryState.pct)
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(10, Style.font.caption)
+          font.bold: true
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: Model.batteryPctText(root.batteryState.pct)
+          color: root.batteryColor(root.batteryState.pct)
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
         }
         Text {
           visible: root.batteryState.charging
@@ -567,29 +557,18 @@ Panel {
     }
   }
 
-  // Nerd Font material battery glyph tiers (nf-md-battery_*), chosen by charge
-  // level so the icon itself fills as the battery drains — a literal visual of
-  // the % inside the icon. Mirrors the usage-color tiers (alarm/mild/calm).
-  function batteryGlyph(pct) {
-    var v = Number(pct) || 0
-    if (v >= 95) return "\u{F0264}"  // battery_charging_100 (full)
-    if (v >= 90) return "\u{F023A}"  // battery_90
-    if (v >= 80) return "\u{F023B}"  // battery_80
-    if (v >= 70) return "\u{F023C}"  // battery_70
-    if (v >= 60) return "\u{F023D}"  // battery_60
-    if (v >= 50) return "\u{F023E}"  // battery_50
-    if (v >= 40) return "\u{F023F}"  // battery_40
-    if (v >= 30) return "\u{F0240}"  // battery_30
-    if (v >= 20) return "\u{F0241}"  // battery_20
-    if (v >= 10) return "\u{F0242}"  // battery_10
-    return "\u{F0243}"               // battery_outline (empty)
-  }
-  // Small charging bolt glyph, shown beside the icon while plugged in.
-  readonly property string batteryBoltGlyph: "\u{F0269}"
-  // The glyph the bar/dropdown hero shows for the current charge level.
+  // The battery icon. We use the single battery glyph from Model.js (U+F0B44,
+  // nf-md-battery) — it renders as a recognisable battery with a narrow
+  // terminal and a wide body, unlike the material "fill-tier" battery glyphs
+  // which at bar size read as a solid "B" or a stray stroke. The charge LEVEL
+  // is conveyed by the % text and the threshold color, not by the icon shape.
+  // A plain (non-filled) outline is shown when no battery is present.
+  readonly property string batteryOutlineGlyph: "󰉃"
+  readonly property string batteryIconGlyphChar: "󰭄"
+  readonly property string batteryBoltGlyph: "󰉩"
   function batteryIconGlyph() {
-    if (!root.batteryState.ready) return "\u{F0243}"  // outline when absent
-    return root.batteryGlyph(root.batteryState.pct)
+    if (!root.batteryState.ready) return root.batteryOutlineGlyph
+    return root.batteryIconGlyphChar
   }
 
   // The CPU/GPU bar items surface the live aggregate on their tooltip.
