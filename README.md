@@ -33,8 +33,26 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
   - Aggregate READ/WRITE rates and a used-space bar (used / total + %).
   - All from `df` + `/proc/diskstats` + `/proc/<pid>/io` — no `iotop`/`iostat`/
     `pidstat` dependency.
-- Disk, RAM, Battery, Network — Disk is wired above; RAM, Battery and Network
-  bar items are present; their dropdowns are placeholders for now (next steps).
+- **RAM** — fully wired:
+  - A two-line `ram / NN%` text in the bar, plus a dropdown with a memory-
+    pressure speedometer, usage history, a user/system/free/swap distribution.
+  - A **top memory processes** table (name · pid · RSS) and PSI memory pressure.
+  - Pure `/proc/meminfo` + `/proc/<pid>/status` reads — no `free`/`vmstat` dep.
+- **Battery** — fully wired:
+  - A one-line `HH:MM <icon>NN%` bar item: time-to-full/empty, a filled battery
+    glyph with the % overlaid *inside* it, and a small bolt while charging.
+  - Tinted by *reversed* charge thresholds (low charge = alarming).
+  - A dropdown with a big charge icon + % + on-AC/on-battery state, power
+    details (Power W, Current mA, Voltage V, Health %, Cycles, Temperature,
+    Energy Wh), a **charge-history graph** and **top processes** (the dominant
+    battery drain; see note below).
+  - Pure `/sys/class/power_supply` + `/proc` reads — no `acpi`/`upower` dep.
+- Network — the bar item is present; its dropdown is a placeholder for now.
+
+> **Battery "top processes" are a drain proxy, not measured watts.** Linux
+> exposes no per-process power meter, so the dropdown lists the top *CPU*
+> consumers (the dominant battery drain), sampled from the same `/proc` window
+> cpu.sh uses. It's labelled as such in the panel.
 
 ## Install
 
@@ -70,8 +88,12 @@ omarchy bar set obi.stats refreshSeconds      2   # base sample period (fallback
 omarchy bar set obi.stats cpuRefreshSeconds   2   # CPU poll period (defaults to base)
 omarchy bar set obi.stats gpuRefreshSeconds   2   # GPU poll period (defaults to base)
 omarchy bar set obi.stats fileioRefreshSeconds 2  # disk I/O poll period (defaults to base)
+omarchy bar set obi.stats batteryRefreshSeconds 2  # battery poll period (defaults to base)
 omarchy bar set obi.stats diskMount           /   # filesystem monitored for space
 omarchy bar set obi.stats diskTopProcesses    5   # rows in the disk top-I/O table
+omarchy bar set obi.stats topBatteryProcesses 5   # rows in the battery top-processes table
+omarchy bar set obi.stats batteryAlarmPct     20  # battery % below this = alarming
+omarchy bar set obi.stats batteryMildPct      60  # at/above this = calm (mild between)
 omarchy bar set obi.stats historyMinutes     60   # history graph window
 omarchy bar set obi.stats topProcesses        8   # rows in the process table
 omarchy bar set obi.stats calmLimit           30  # usage color tier: below = calm
@@ -88,8 +110,12 @@ to different values and each stat samples on its own cadence (e.g. CPU every
 | `cpuRefreshSeconds` | = refreshSeconds | CPU poll period (independent override) |
 | `gpuRefreshSeconds` | = refreshSeconds | GPU poll period (independent override) |
 | `fileioRefreshSeconds` | = refreshSeconds | disk I/O + space poll period (independent override) |
+| `batteryRefreshSeconds` | = refreshSeconds | battery poll period (independent override) |
 | `diskMount` | `/` | filesystem the disk stat monitors for space |
 | `diskTopProcesses` | 5 | rows in the disk top-I/O table |
+| `topBatteryProcesses` | 5 | rows in the battery top-processes table |
+| `batteryAlarmPct` | 20 | battery % below this is alarming |
+| `batteryMildPct` | 60 | battery % at/above this is calm (mild between) |
 | `historyMinutes` | 60 | how long the moving graph window spans |
 | `topProcesses` | 8 | how many heavy processes to list (CPU) |
 | `calmLimit` / `mildLimit` | 30 / 60 | usage-coloring thresholds |
@@ -108,6 +134,8 @@ cpu.sh          /proc-based CPU sampler (aggregate, per-core, per-process)
 gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
 gpu-install.sh  one-click terminal helper behind the setup card's install button
 disk.sh         df + /proc diskstats + /proc/<pid>/io sampler (space + I/O rates)
+ram.sh          /proc/meminfo + /proc/<pid>/status sampler (RAM + per-proc RSS)
+battery.sh      /sys/class/power_supply + /proc sampler (charge, power, health)
 ```
 
 - `Panel.qml` is the bar-widget entry point *and* the dropdown host — one widget
@@ -128,6 +156,11 @@ disk.sh         df + /proc diskstats + /proc/<pid>/io sampler (space + I/O rates
   the disk dropdown's read/write history and top-I/O-processes table.
 - `Model.js` parses the sampler output and implements the scrolling history
   window and process-table caps as pure functions (test with `node`).
+- `battery.sh` reads `/sys/class/power_supply/BAT*` + `AC*` for the battery and
+  AC presence, computing charge %, voltage, current, power, health, cycles,
+  temperature and time-to-full/empty from raw µAh/µV/µW values, then samples
+  per-process CPU (the drain proxy) from `/proc`. Run
+  `omarchy-shell obi.stats openBattery` to open the battery dropdown.
 
 ### Why `obi.stats` and not `omarchy.stats`
 

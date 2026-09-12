@@ -15,8 +15,9 @@ important caveat is reproduced up front so it cannot be missed:
 
 A system-stats bar-widget plugin for [Omarchy](https://omarchy.org/) (Hyprland).
 Adds a row of clickable stat items (CPU, GPU, disk, RAM, battery, network);
-CPU is fully wired (per-core bars, scrolling history graph, top-processes table,
-theme-aware usage tinting). The other stats' dropdowns are placeholders.
+CPU, GPU, disk, RAM and battery are fully wired (bars, live dropdowns with
+history graphs, top-processes tables, theme-aware tinting). The network
+dropdown is the remaining placeholder.
 
 ```
 manifest.json   plugin manifest (id obi.stats, kind bar-widget)
@@ -24,12 +25,21 @@ Panel.qml       bar widget + dropdown UI host (QML)
 Model.js        pure, node-testable data/logic helpers
 cpu.sh          /proc-based CPU sampler (no mpstat/sar/htop deps)
 gpu.sh          vendor-agnostic GPU sampler (Intel/NVIDIA/AMD) + --doctor
+disk.sh         df + /proc diskstats + /proc/<pid>/io sampler
+ram.sh          /proc/meminfo + per-process RSS sampler
+battery.sh      /sys/class/power_supply + per-process drain sampler
 ```
 
-> **`cpu.sh` and `gpu.sh` must stay executable (`chmod +x`).** The shell runs
-> them as programs; if the bit is lost (some manual copies strip it), the
-> sampler silently fails and the dropdown shows stale/empty data. Git preserves
-> the `100755` mode in this repo — just don't drop them when back-sourcing.
+> **`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`, `battery.sh` must stay executable
+> (`chmod +x`).** The shell runs them as programs; if the bit is lost (some
+> manual copies strip it), the sampler silently fails and the dropdown shows
+> stale/empty data. Git preserves the `100755` mode in this repo — just don't
+> drop them when back-sourcing.
+
+> **Battery "top processes" are a CPU-drain proxy.** Linux exposes no per-process
+> power meter, so `battery.sh` lists the top CPU consumers (the dominant
+> battery drain). It's labelled as such in the panel. Don't present those % as
+> measured watts.
 
 > **GPU is vendor-agnostic + best-effort.** `gpu.sh` shells out to whichever
 > helper the detected GPU needs (`intel_gpu_top`, `nvidia-smi`, `rocm-smi`/
@@ -100,7 +110,10 @@ sync script if iteration is heavy.
   entry in `~/.config/omarchy/shell.json` using `setting("key", default)` and set
   with `omarchy bar set obi.stats <key> <value>`. Existing keys:
   `refreshSeconds` (2), `historyMinutes` (60), `topProcesses` (8),
-  `calmLimit` (30), `mildLimit` (60).
+  `calmLimit` (30), `mildLimit` (60), plus per-stat overrides
+  (`cpuRefreshSeconds`, `gpuRefreshSeconds`, `fileioRefreshSeconds`,
+  `ramRefreshSeconds`, `batteryRefreshSeconds`) and battery tints
+  (`batteryAlarmPct` 20, `batteryMildPct` 60).
 - **Theme-cohesive colors:** CPU tint maps to semantic roles
   `foreground` / `accent` / `urgent` from `colors.toml`, so it adapts to any theme.
 - **Pure logic stays in Model.js** as node-testable functions (e.g.

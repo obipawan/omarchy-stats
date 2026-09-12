@@ -22,8 +22,10 @@ import "Model.js" as Model
 // a dropdown with a dual-axis read/write I/O history and top I/O processes.
 // RAM is wired too: a two-line "ram / NN%" bar item plus a dropdown with a
 // memory-pressure speedometer, usage history, a user/system/free/swap
-// distribution, and top memory processes. The remaining stats (battery,
-// network) still show a placeholder.
+// distribution, and top memory processes. Battery is wired too: a one-line
+// "HH:MM  <icon>NN%" bar item plus a dropdown with a big charge icon, power
+// details (W / mA / V / health / cycles / temp) and top processes. The
+// remaining stat (network) still shows a placeholder.
 //
 // Per-widget settings come from the shell.json entry (see `setting()`), e.g.:
 //   topProcesses       default 8     how many heavy processes to list (CPU)
@@ -31,8 +33,12 @@ import "Model.js" as Model
 //   cpuRefreshSeconds  default base  CPU poll period, independent override
 //   gpuRefreshSeconds  default base  GPU poll period, independent override
 //   fileioRefreshSeconds default base  disk I/O poll period, independent override
+//   batteryRefreshSeconds default base  battery poll period, independent override
 //   diskMount          default /     filesystem monitored for space
 //   diskTopProcesses   default 5     rows in the disk top-I/O table
+//   topBatteryProcesses default 5    rows in the battery top-processes table
+//   batteryAlarmPct    default 20    battery % below which it's alarming
+//   batteryMildPct     default 60    above which it's calm (mild in between)
 //   historyMinutes     default 60    length of the usage-history window
 // Set them with: omarchy bar set obi.stats <key> <value>
 Panel {
@@ -68,6 +74,7 @@ Panel {
   readonly property string gpuScript: root.pluginDir + "/gpu.sh"
   readonly property string diskScript: root.pluginDir + "/disk.sh"
   readonly property string ramScript: root.pluginDir + "/ram.sh"
+  readonly property string batteryScript: root.pluginDir + "/battery.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
   // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
   readonly property string pluginDir:
@@ -96,6 +103,18 @@ Panel {
   // Skip entries using less than this many MB of RAM in the top-memory table,
   // so the list isn't dominated by hundreds of tiny processes.
   readonly property int ramMinProcessMB: Math.max(0, parseInt(setting("ramMinProcessMB", 5), 10) || 5)
+  // Battery polls the ACPI power-supply tree /sys each tick (instantaneous
+  // reads like RAM — no sample window). This is its poll period (defaults to
+  // refreshSeconds). The per-process drain sample inside battery.sh uses a
+  // fraction of this as its own window.
+  readonly property int batteryRefreshSeconds: Math.max(1, parseInt(setting("batteryRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
+  // Rows in the battery "top processes" table (drain proxy = top CPU consumers).
+  readonly property int topBatteryProcesses: Math.max(1, parseInt(setting("topBatteryProcesses", 5), 10) || 5)
+  // Battery-charge % tint thresholds — reversed from the usage tiers because a
+  // LOW charge is the alarming end. Below batteryAlarmPct = alarming (urgent),
+  // up to batteryMildPct = mild (accent), at/above batteryMildPct = calm.
+  readonly property int batteryAlarmPct: Math.max(1, parseInt(setting("batteryAlarmPct", 20), 10) || 20)
+  readonly property int batteryMildPct: Math.max(1, parseInt(setting("batteryMildPct", 60), 10) || 60)
   readonly property int historySeconds: Math.max(30, parseInt(setting("historyMinutes", 60), 10) || 60) * 60
 
   // Usage tint thresholds, as percent. Settings (e.g. `omarchy bar set
@@ -132,6 +151,16 @@ Panel {
     if (v > root.mildLimit) return Color.urgent
     if (v < root.calmLimit) return root.cpuText
     return Color.accent
+  }
+
+  // Battery-charge tint. Reversed polarity vs the usage tiers: a LOW charge is
+  // the alarming end, so below batteryAlarmPct (default 20) is urgent, mild up
+  // to batteryMildPct (default 60), calm at/above that.
+  function batteryColor(percent) {
+    var v = Number(percent) || 0
+    if (v < root.batteryAlarmPct) return Color.urgent
+    if (v < root.batteryMildPct) return Color.accent
+    return root.cpuText
   }
 
   // ---- CPU state --------------------------------------------------------
@@ -239,6 +268,39 @@ Panel {
       ? Model.formatRamSize(ramState.swapUsed) + " / " + Model.formatRamSize(ramState.swapTotal)
       : "off"
 
+  // ---- Battery state ----------------------------------------------------
+  // Instantaneous snapshot of the ACPI power-supply tree + a top-CPU-consumer
+  // sample (the drain proxy). `ready` is true once a battery is present and a
+  // level parsed; a laptop without a battery has present=false so the bar can
+  // fall back to a plain icon.
+  property var batteryState: ({ present: false, state: "unknown", ac: false,
+                                pct: -1, voltage: -1, current: 0, power: 0,
+                                energy: -1, energyFull: -1, energyFullDesign: -1,
+                                health: -1, cycles: -1, temp: -1,
+                                timeToFull: 0, timeToEmpty: 0, model: "",
+                                charging: false, discharging: false,
+                                ready: false, procs: [] })
+  property var batteryHistory: []
+  property bool batteryPolling: false
+
+  // Top CPU consumers (battery-drain proxy) — called "top processes" in a
+  // battery context, capped to the configured row count.
+  readonly property var batteryTopProcs: Model.topBatteryProcs(batteryState.procs, topBatteryProcesses)
+  // Charge-level history graph, same fixed 0..100% axis as the other stats.
+  readonly property var batteryGraph: Model.scrollWindow(batteryHistory, historyBuckets)
+  readonly property var batteryGraphHeights: Model.normalize(batteryGraph, 100)
+  // Charge polarity drives the bar time shown: charging shows time-to-full,
+  // discharging time-to-empty, full/idle shows the dash.
+  readonly property string batteryTimeText:
+    batteryState.charging
+      ? Model.formatBatteryTime(batteryState.timeToFull)
+      : (batteryState.discharging ? Model.formatBatteryTime(batteryState.timeToEmpty) : "--")
+  // A short "on plug" / "on battery" caption for the dropdown hero meta.
+  readonly property string batteryStatusText:
+    batteryState.ready
+      ? (batteryState.discharging ? "On battery" : "On AC")
+      : "No battery"
+
   // ---- Bar widget sizing ----
   // CPU and GPU items are two-line text stacks (label over %) instead of an
   // icon, so they need a bit more height than the icon slot and enough width
@@ -254,6 +316,11 @@ Panel {
   // RAM shows "ram"/"NN%" (two text lines, like CPU/GPU).
   readonly property int ramBarHeight: Style.bar.sizeHorizontal
   readonly property int ramBarWidth: Style.space(34)
+  // Battery shows "HH:MM <icon+%>⚡" on one line (time + a battery glyph with the
+  // % overlaid inside + a bolt while charging), so it needs more width than the
+  // two-line stacks to fit e.g. "2:05 󰉃100%⚡".
+  readonly property int batteryBarHeight: Style.bar.sizeHorizontal
+  readonly property int batteryBarWidth: Style.space(56)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -265,11 +332,12 @@ Panel {
   readonly property real openPanelIndicatorWidth: 1
   readonly property real openPanelIndicatorHeight: 1
 
-  // Whether a stat renders as a live two-line % stack in the bar.
+  // Whether a stat renders as a live bar item (a custom composition rather than
+  // a plain icon button).
   function isLiveStat(stat) {
     if (!stat) return false
     var id = String(stat.id)
-    return id === "cpu" || id === "gpu" || id === "disk" || id === "ram"
+    return id === "cpu" || id === "gpu" || id === "disk" || id === "ram" || id === "battery"
   }
 
   function barItemWidth(stat) {
@@ -277,6 +345,7 @@ Panel {
     if (stat && String(stat.id) === "gpu") return root.gpuBarWidth
     if (stat && String(stat.id) === "disk") return root.diskBarWidth
     if (stat && String(stat.id) === "ram") return root.ramBarWidth
+    if (stat && String(stat.id) === "battery") return root.batteryBarWidth
     return Style.bar.iconSlot
   }
 
@@ -285,6 +354,7 @@ Panel {
     if (stat && String(stat.id) === "gpu") return root.gpuBarHeight
     if (stat && String(stat.id) === "disk") return root.diskBarHeight
     if (stat && String(stat.id) === "ram") return root.ramBarHeight
+    if (stat && String(stat.id) === "battery") return root.batteryBarHeight
     return Style.bar.sizeHorizontal
   }
 
@@ -368,7 +438,7 @@ Panel {
 
       // CPU/GPU: label over the live %, tinted by the usage thresholds.
       Text {
-        visible: stat.id !== "disk"
+        visible: stat.id !== "disk" && stat.id !== "battery"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
         text: stat.label.toLowerCase()
@@ -379,7 +449,7 @@ Panel {
       }
       Text {
         id: pctLine
-        visible: stat.id !== "disk"
+        visible: stat.id !== "disk" && stat.id !== "battery"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
         text: root.livePctText(stat.id)
@@ -387,6 +457,63 @@ Panel {
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Math.max(8, Style.font.caption - 1)
         font.bold: true
+      }
+
+      // Battery: one line — time-to-full/empty, a filled battery glyph with the
+      // % overlaid inside it, and a small bolt while charging. The whole line
+      // is tinted by the (reversed) charge thresholds: low charge = alarming.
+      Row {
+        visible: stat.id === "battery"
+        Layout.alignment: Qt.AlignHCenter
+        spacing: Style.space(1)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: root.batteryTimeText
+          color: root.batteryColor(root.batteryState.pct)
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
+        }
+        // The battery icon with the % overlaid INSIDE it: a wider box holding
+        // the filled glyph as the "shell" and a smaller % sitting on top of its
+        // body. Sized to the glyph so the number lands mid-battery.
+        Item {
+          width: Style.space(22)
+          height: parent.height
+          Text {
+            anchors.fill: parent
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: root.batteryIconGlyph()
+            color: root.batteryColor(root.batteryState.pct)
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Math.max(13, Style.font.caption + 3)
+            font.bold: true
+          }
+          Text {
+            anchors.fill: parent
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: Model.batteryPctText(root.batteryState.pct)
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Math.max(7, Style.font.caption - 4)
+            font.bold: true
+          }
+        }
+        Text {
+          visible: root.batteryState.charging
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: root.batteryBoltGlyph
+          color: root.batteryColor(root.batteryState.pct)
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(8, Style.font.caption - 1)
+          font.bold: true
+        }
       }
 
       // Disk: two lines. The F:/U: prefix stays theme text; only the value is
@@ -440,6 +567,31 @@ Panel {
     }
   }
 
+  // Nerd Font material battery glyph tiers (nf-md-battery_*), chosen by charge
+  // level so the icon itself fills as the battery drains — a literal visual of
+  // the % inside the icon. Mirrors the usage-color tiers (alarm/mild/calm).
+  function batteryGlyph(pct) {
+    var v = Number(pct) || 0
+    if (v >= 95) return "\u{F0264}"  // battery_charging_100 (full)
+    if (v >= 90) return "\u{F023A}"  // battery_90
+    if (v >= 80) return "\u{F023B}"  // battery_80
+    if (v >= 70) return "\u{F023C}"  // battery_70
+    if (v >= 60) return "\u{F023D}"  // battery_60
+    if (v >= 50) return "\u{F023E}"  // battery_50
+    if (v >= 40) return "\u{F023F}"  // battery_40
+    if (v >= 30) return "\u{F0240}"  // battery_30
+    if (v >= 20) return "\u{F0241}"  // battery_20
+    if (v >= 10) return "\u{F0242}"  // battery_10
+    return "\u{F0243}"               // battery_outline (empty)
+  }
+  // Small charging bolt glyph, shown beside the icon while plugged in.
+  readonly property string batteryBoltGlyph: "\u{F0269}"
+  // The glyph the bar/dropdown hero shows for the current charge level.
+  function batteryIconGlyph() {
+    if (!root.batteryState.ready) return "\u{F0243}"  // outline when absent
+    return root.batteryGlyph(root.batteryState.pct)
+  }
+
   // The CPU/GPU bar items surface the live aggregate on their tooltip.
   function tooltipFor(stat) {
     if (!stat) return ""
@@ -453,6 +605,14 @@ Panel {
              Model.formatGb(root.diskState.fsFree) + " free"
     if (stat.id === "ram")
       return stat.label + " — " + root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
+    if (stat.id === "battery") {
+      if (!root.batteryState.ready) return stat.label + " — no battery"
+      var charge = Model.batteryPctText(root.batteryState.pct)
+      var t = root.batteryState.charging ? "to full " + root.batteryTimeText
+             : (root.batteryState.discharging ? "left " + root.batteryTimeText : "full")
+      return stat.label + " — " + charge + "  ·  " + root.batteryStatusText +
+             (t && t !== "full" ? "  ·  " + t : "")
+    }
     return stat.label
   }
 
@@ -478,6 +638,7 @@ Panel {
     else if (stat.id === "gpu") refreshGpu()
     else if (stat.id === "disk") refreshDisk()
     else if (stat.id === "ram") refreshRam()
+    else if (stat.id === "battery") refreshBattery()
     root.controller.show()
   }
 
@@ -667,6 +828,46 @@ Panel {
     onTriggered: { if (!root.ramPolling) root.refreshRam() }
   }
 
+  // ============================ Battery polling ==========================
+  // A single instantaneous /sys ACPI pass (no sample window for the battery
+  // itself — those are point-in-time reads like RAM). battery.sh also samples
+  // per-process CPU as the drain proxy over a small window; that window must be
+  // a fraction of the poll interval so each run finishes inside one tick, same
+  // rule as cpu/gpu/disk sample windows.
+  readonly property string batterySampleWindow:
+    String(Math.max(0.2, Math.round(root.batteryRefreshSeconds * 0.3 * 100) / 100))
+  function refreshBattery() {
+    if (root.batteryPolling) return
+    root.batteryPolling = true
+    batteryProc.command = [root.batteryScript, root.batterySampleWindow, String(root.topBatteryProcesses)]
+    batteryProc.running = true
+  }
+
+  Process {
+    id: batteryProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onBatteryFinished(text)
+    }
+  }
+
+  function onBatteryFinished(raw) {
+    root.batteryPolling = false
+    var parsed = Model.parseBatteryOutput(raw)
+    root.batteryState = parsed
+    var now = Date.now() / 1000
+    // Only a live sample feeds the charge history graph.
+    if (parsed.ready) root.batteryHistory = Model.appendHistory(root.batteryHistory, now, parsed.pct, root.historySeconds)
+  }
+
+  Timer {
+    id: batteryPollTimer
+    interval: root.batteryRefreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: { if (!root.batteryPolling) root.refreshBattery() }
+  }
+
   // Hero text: for CPU the title is "CPU CORES"; for GPU it's the matching
   // "GPU CORES" (the vendor labels it engines, but "CORES" keeps the pair
   // visually consistent). Neither repeats the stat label in meta — other stats
@@ -678,6 +879,7 @@ Panel {
     if (root.activeStat.id === "gpu") return "GPU CORES"
     if (root.activeStat.id === "disk") return "DISK I/O"
     if (root.activeStat.id === "ram") return "RAM USAGE"
+    if (root.activeStat.id === "battery") return "BATTERY"
     return root.activeStat.label
   }
 
@@ -696,6 +898,11 @@ Panel {
     }
     if (root.activeStat.id === "ram")
       return root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
+    if (root.activeStat.id === "battery") {
+      if (!root.batteryState.ready) return "No battery"
+      var time = " — " + Model.formatPct(root.batteryState.pct)
+      return root.batteryStatusText + time + (root.batteryState.charging && root.batteryTimeText !== "--" ? "  ·  full in " + root.batteryTimeText : "")
+    }
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
 
@@ -2078,9 +2285,290 @@ Panel {
         }
       }
 
+      // ==================== Battery body ==============================
+      Column {
+        visible: root.activeStat && root.activeStat.id === "battery"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(10)
+
+        // ---- Setup / absent state ----
+        Column {
+          visible: !root.batteryState.ready
+          width: parent.width
+          spacing: Style.space(8)
+          PanelSectionHeader {
+            text: "NO BATTERY"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "No battery was found on this system."
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
+
+        // ---- Live view ----
+        Column {
+          visible: root.batteryState.ready
+          width: parent.width
+          spacing: Style.space(10)
+
+          // Hero: big filled battery glyph with the % overlaid inside, the
+          // charging bolt, and a "on AC / on battery" caption + time-to-full /
+          // time-to-empty. Tinted by the (reversed) charge thresholds.
+          Row {
+            width: parent.width
+            spacing: Style.space(14)
+
+            // Big icon: a square the size of the hero icon, % centered on top.
+            Item {
+              width: Style.space(96)
+              height: Style.space(96)
+              Text {
+                anchors.fill: parent
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                text: root.batteryIconGlyph()
+                color: root.batteryColor(root.batteryState.pct)
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.space(64)
+                font.bold: true
+              }
+              Text {
+                anchors.fill: parent
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                text: Model.batteryPctText(root.batteryState.pct)
+                color: root.cpuText
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.heading
+                font.bold: true
+              }
+              // Bolt, charged yellow-accent, peeking from the top-right.
+              Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: Style.space(-24)
+                visible: root.batteryState.charging
+                textFormat: Text.PlainText
+                text: root.batteryBoltGlyph
+                color: root.batteryColor(root.batteryState.pct)
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.display
+                font.bold: true
+              }
+            }
+
+            // Caption block: status + time-to-full/empty in a big readout.
+            Column {
+              spacing: Style.space(6)
+
+              Text {
+                textFormat: Text.PlainText
+                text: root.batteryStatusText
+                color: root.cpuDim
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              // The time readout: "full in 2:05" / "2:05 left" / "full".
+              Text {
+                textFormat: Text.PlainText
+                text: root.batteryState.charging && root.batteryTimeText !== "--"
+                        ? "full in " + root.batteryTimeText
+                        : (root.batteryState.discharging ? root.batteryTimeText + " left" : "fully charged")
+                color: root.batteryColor(root.batteryState.pct)
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.heading
+                font.bold: true
+              }
+
+              Text {
+                visible: root.batteryState.model !== ""
+                textFormat: Text.PlainText
+                text: root.batteryState.model
+                color: root.cpuDim
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.cpuText
+          }
+
+          // ---- Power details ----
+          PanelSectionHeader {
+            text: "POWER DETAILS"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+
+          // Row 1: Power (W), Current (mA), Voltage (V).
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "POWER"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: Model.formatWatts(root.batteryState.power); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: "CURRENT"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: Model.formatMillis(root.batteryState.current); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: "VOLTAGE"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: (root.batteryState.voltage >= 0 ? root.batteryState.voltage + "V" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+
+          // Row 2: Health (%), Cycles, Temperature.
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "HEALTH"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: Model.formatPct(root.batteryState.health); color: root.usageColor(root.batteryState.health); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: "CYCLES"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: (root.batteryState.cycles >= 0 ? root.batteryState.cycles + "" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: "TEMP"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: Model.formatTemp(root.batteryState.temp); color: root.usageColor(root.batteryState.temp); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+
+          // Energy row: remaining / full capacity (Wh) — richer than just %.
+          Row {
+            visible: root.batteryState.energy >= 0 && root.batteryState.energyFull > 0
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "ENERGY"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Text { textFormat: Text.PlainText; text: Math.min(root.batteryState.energy, root.batteryState.energyFull) + "Wh / " + root.batteryState.energyFull + "Wh"; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+
+          PanelSeparator {
+            foreground: root.cpuText
+          }
+
+          // ---- Charge history (the battery's own usage graph) ----
+          PanelSectionHeader {
+            text: "CHARGE HISTORY"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          }
+
+          Item {
+            width: parent.width
+            height: Style.space(60)
+            clip: true
+            Rectangle {
+              anchors.fill: parent
+              color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
+            }
+            Row {
+              id: batteryHistoryBarsRow
+              anchors.fill: parent
+              spacing: Style.space(1)
+              Repeater {
+                model: root.batteryGraphHeights
+                Item {
+                  required property real modelData
+                  width: Style.space(3)
+                  height: batteryHistoryBarsRow.height
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    width: Style.space(3)
+                    height: Math.max(Style.space(1), Math.round(modelData * parent.height))
+                    color: root.cpuData
+                  }
+                }
+              }
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.cpuText
+          }
+
+          // ---- Top processes (drain proxy: top CPU consumers) ----
+          PanelSectionHeader {
+            text: "TOP PROCESSES"
+            foreground: root.cpuText
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            width: parent.width
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "Highest CPU consumers (the dominant battery drain)"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+            Repeater {
+              model: (function() { var a = []; for (var i = 0; i < root.topBatteryProcesses; i++) a.push(i); return a })()
+              Item {
+                required property int modelData
+                readonly property var info: root.batteryTopProcs[modelData]
+                width: parent.parent.width
+                height: Style.space(22)
+                Row {
+                  visible: modelData < root.batteryTopProcs.length
+                  width: parent.width
+                  height: parent.height
+                  Text {
+                    textFormat: Text.PlainText
+                    text: info ? info.comm : ""
+                    elide: Text.ElideRight
+                    width: Math.max(0, parent.width - Style.space(120))
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.cpuText
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    text: info ? info.pid : ""
+                    width: Style.space(56)
+                    horizontalAlignment: Text.AlignRight
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.cpuText
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+                  Item {
+                    width: Style.space(4)
+                    height: 1
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    width: Style.space(60)
+                    text: info ? Model.formatPct(info.pct) : ""
+                    horizontalAlignment: Text.AlignRight
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.usageColor(info ? info.pct : 0)
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       // ==================== Placeholder (other stats) =================
       Column {
-        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk" && root.activeStat.id !== "ram")
+        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk" && root.activeStat.id !== "ram" && root.activeStat.id !== "battery")
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(8)
         PanelSectionHeader {
@@ -2107,6 +2595,7 @@ Panel {
     else if (root.activeStat && root.activeStat.id === "gpu") refreshGpu()
     else if (root.activeStat && root.activeStat.id === "disk") refreshDisk()
     else if (root.activeStat && root.activeStat.id === "ram") refreshRam()
+    else if (root.activeStat && root.activeStat.id === "battery") refreshBattery()
   }
 
   function open() { root.controller.show() }
@@ -2136,5 +2625,6 @@ Panel {
     function openGpu(): void { root.openStatId("gpu") }
     function openDisk(): void { root.openStatId("disk") }
     function openRam(): void { root.openStatId("ram") }
+    function openBattery(): void { root.openStatId("battery") }
   }
 }

@@ -484,6 +484,117 @@ function parseRamOutput(raw) {
   return out
 }
 
+// ============================ BATTERY / POWER =============================
+// Parses the tab-separated output of battery.sh into a single object the panel
+// binds to. battery.sh emits:
+//   present / state / ac / pct / voltage / current (mA) / power (W signed)
+//   energy / energyFull / energyFullDesign (Wh) / health / cycles / temp (°C)
+//   timeToFull / timeToEmpty (seconds) / model
+//   proc\t<pid>\t<pct>\t<comm>   top CPU processes (battery-drain proxy)
+// Returns { present, state, ac, pct, voltage, current, power, energy,
+//           energyFull, energyFullDesign, health, cycles, temp,
+//           timeToFull, timeToEmpty, model, charging, discharging, ready,
+//           procs:[{pid,pct,comm}] }.
+// `charging`/`discharging` are derived booleans so the panel doesn't string-match
+// on `state`; `ready` is true once a present battery has a level parsed.
+function parseBatteryOutput(raw) {
+  var lines = String(raw || "").split("\n")
+  var out = { present: false, state: "unknown", ac: false, pct: -1,
+              voltage: -1, current: 0, power: 0,
+              energy: -1, energyFull: -1, energyFullDesign: -1,
+              health: -1, cycles: -1, temp: -1,
+              timeToFull: 0, timeToEmpty: 0, model: "",
+              charging: false, discharging: false, ready: false, procs: [] }
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("\t")
+    if (parts.length < 2) continue
+    var kind = parts[0]
+    if (kind === "present") { out.present = parts[1] === "1" }
+    else if (kind === "state") out.state = String(parts[1] || "unknown")
+    else if (kind === "ac") { out.ac = parts[1] === "1" }
+    else if (kind === "pct") { var p = parseFloat(parts[1]); if (isFinite(p)) out.pct = Math.round(p) }
+    else if (kind === "voltage") { var v = parseFloat(parts[1]); if (isFinite(v)) out.voltage = v }
+    else if (kind === "current") { var c = parseFloat(parts[1]); if (isFinite(c)) out.current = Math.round(c) }
+    else if (kind === "power") { out.power = parseFloat(parts[1]) }
+    else if (kind === "energy") { var e = parseFloat(parts[1]); if (isFinite(e)) out.energy = e }
+    else if (kind === "energyFull") { var ef = parseFloat(parts[1]); if (isFinite(ef)) out.energyFull = ef }
+    else if (kind === "energyFullDesign") { var ed = parseFloat(parts[1]); if (isFinite(ed)) out.energyFullDesign = ed }
+    else if (kind === "health") { var h = parseFloat(parts[1]); if (isFinite(h)) out.health = h }
+    else if (kind === "cycles") { var cy = parseFloat(parts[1]); if (isFinite(cy)) out.cycles = cy }
+    else if (kind === "temp") { var tp = parseFloat(parts[1]); if (isFinite(tp)) out.temp = tp }
+    else if (kind === "timeToFull") { var ttf = parseFloat(parts[1]); if (isFinite(ttf)) out.timeToFull = ttf }
+    else if (kind === "timeToEmpty") { var tte = parseFloat(parts[1]); if (isFinite(tte)) out.timeToEmpty = tte }
+    else if (kind === "model") out.model = String(parts[1] || "").trim()
+    else if (kind === "proc") {
+      var pp = parseFloat(parts[2] || "")
+      if (isFinite(pp))
+        out.procs.push({ pid: String(parts[1] || "").trim(), pct: Math.round(pp * 10) / 10,
+                         comm: String(parts[3] || "").trim() })
+    }
+  }
+  out.charging = out.state === "charging"
+  out.discharging = out.state === "discharging"
+  // Sanity: only trust numbers that actually parsed as positives. `ready` means
+  // a battery is present and we got a level (>= 0); a missing battery stays not
+  // ready so the panel can show a graceful empty state rather than "-1%".
+  out.ready = out.present && out.pct >= 0
+  return out
+}
+
+// Keep the newest `limit` battery-process rows (top CPU consumers, the drain
+// proxy — battery.sh already sorts desc by %). Mirrors topProcRows.
+function topBatteryProcs(procs, limit) {
+  var rows = Array.isArray(procs) ? procs : []
+  var n = Math.max(1, parseInt(limit, 10) || rows.length)
+  var trimmed = rows.slice(0, Math.min(n, rows.length))
+  return trimmed.filter(function(p) {
+    var v = Number(p && p.pct)
+    return (isFinite(v) && v > 0) || String(p && p.comm || "") !== ""
+  })
+}
+
+// Format a duration in seconds as "H:MM", e.g. 7540s -> "2:06". Minutes round
+// to the nearest so a partial minute is visible (59s -> "0:01", 3601s ->
+// "1:00"). Returns "--" for zero / not available so a full or idle battery
+// shows a dash rather than "0:00".
+function formatBatteryTime(seconds) {
+  var s = Math.round(parseFloat(seconds))
+  if (!isFinite(s) || s <= 0) return "--"
+  var h = Math.floor(s / 3600)
+  var m = Math.round((s % 3600) / 60)
+  if (m === 60) { m = 0; h = h + 1 }
+  return String(h) + ":" + (m < 10 ? "0" : "") + m
+}
+
+// Format battery watts, signed (positive = charging rate, negative = discharge
+// draw): "12.4W", showing sign only for discharge. Returns "--" out of range.
+function formatWatts(watts) {
+  var v = parseFloat(watts)
+  if (!isFinite(v)) return "--"
+  var a = Math.abs(v)
+  var s = a >= 100 ? Math.round(a) + "W" : (Math.round(a * 10) / 10) + "W"
+  return v < 0 ? "-" + s : s
+}
+
+// Format battery current in milliamps: "512mA", or amps once it crosses 1A.
+// Returns "--" for not available.
+function formatMillis(ma) {
+  var v = parseFloat(ma)
+  if (!isFinite(v)) return "--"
+  var a = Math.abs(v)
+  var s = a >= 1000 ? (Math.round(a / 100) / 10) + "A" : Math.round(a) + "mA"
+  return v < 0 ? "-" + s : s
+}
+
+// Format a wall-clock battery % that also doubles as a charge icon tier. Kept
+// simple: returns the integer percent, matching formatPct but battery-specific
+// so the bar can show it plainly without the "-1" edge leaking through.
+function batteryPctText(pct) {
+  var v = parseFloat(pct)
+  if (!isFinite(v) || v < 0) return "--"
+  return Math.round(v) + "%"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     statDefinitions: statDefinitions,
@@ -512,6 +623,12 @@ if (typeof module !== "undefined") {
     formatRate: formatRate,
     formatRamSize: formatRamSize,
     formatRss: formatRss,
-    parseRamOutput: parseRamOutput
+    parseRamOutput: parseRamOutput,
+    parseBatteryOutput: parseBatteryOutput,
+    topBatteryProcs: topBatteryProcs,
+    formatBatteryTime: formatBatteryTime,
+    formatWatts: formatWatts,
+    formatMillis: formatMillis,
+    batteryPctText: batteryPctText
   }
 }
