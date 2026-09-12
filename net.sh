@@ -32,9 +32,8 @@
 #   - ss -tinp           per-socket bytes_sent/bytes_received + owning PID
 #                        (netlink diag is readable for the calling user's own
 #                        sockets, no root), deltad over the window
-#   - ping + curl        internet reachability / latency / public IP, run on a
-#                        throttled cadence so the fast per-tick sample never
-#                        blocks on a network probe
+#   - ping + curl        internet reachability / latency (ping, every tick) and
+#                        public IP (curl, throttled to the probe cadence)
 #
 # PER-PROCESS LIMITATION (documented): ss exposes cumulative /proc<->remote
 # byte counters only for TCP sockets; UDP/QUIC traffic (e.g. some streaming)
@@ -43,7 +42,8 @@
 #
 # Usage: net.sh [window-seconds] [probe-every-seconds]
 #   window-seconds       rate sample window (default 0.5)
-#   probe-every-seconds  min seconds between slow network probes (default 10)
+#   probe-every-seconds  min seconds between public-IP HTTP probes (default 10);
+#                        ping/online run every tick regardless
 
 WINDOW="${1:-0.5}"
 PROBE_EVERY="${2:-10}"
@@ -89,54 +89,51 @@ fi
 [ -n "$src" ] && printf "ip\t%s\n" "$src"
 [ -n "$iface" ] && printf "connected\t1\n" || printf "connected\t0\n"
 
-# --- throttled internet probe (ping latency + online + public IP) ----------
-# Run on a cadence so a fast per-tick sample never blocks on a slow probe.
-# Results are cached to a runtime file and re-emitted every tick; the panel
-# reads whatever is known (stale but stable) between probes.
+#--- throttled internet probe (ping latency + online + public IP) ----------
+# The shell calls net.sh once per networkRefreshSeconds. The ICMP ping
+# (online state + latency) runs EVERY tick — cheap (~ms online, -W1) — so
+# internet up/down and ping follow the refresh config. The public IP needs an
+# external HTTP round-trip, so it stays throttled to PROBE_EVERY
+# (networkProbeSeconds) and is cached between refreshes.
 RUNTIME="${XDG_RUNTIME_DIR:-/tmp}/obi-stats-net-probe"
 PROBE_FILE="$RUNTIME"
 now=$(date +%s)
+
+# Ping every tick. LC_ALL=C so the `time=` token parses under any locale.
+ms=$(LC_ALL=C ping -n -c 1 -W 1 "$PROBE_HOST" 2>/dev/null \
+       | awk -F'time[=<]' '/time[=<]/{ split($2,a," "); print a[1]; exit }')
+if [ -n "$ms" ]; then
+  probe_online=1
+  probe_ping="$ms"
+else
+  probe_online=0
+  probe_ping=""
+fi
+
+# Public IP: reuse the cached value; refresh when online and the cache is
+# older than PROBE_EVERY seconds. Short -m so a dead endpoint can't stall the
+# tick; on failure the last known value is kept.
+probe_pub=""
 latest=0
 [ -r "$PROBE_FILE" ] && latest=$(stat -c %Y "$PROBE_FILE" 2>/dev/null || echo 0)
-probe_online=0; probe_ping=""; probe_pub=""
 if [ -r "$PROBE_FILE" ]; then
-  probe_online=$(awk -F'\t' '$1=="online"{print $2}' "$PROBE_FILE" 2>/dev/null)
-  probe_ping=$(awk -F'\t' '$1=="pingMs"{print $2}' "$PROBE_FILE" 2>/dev/null)
   probe_pub=$(awk -F'\t' '$1=="publicIp"{print $2}' "$PROBE_FILE" 2>/dev/null)
 fi
-[ -z "$probe_online" ] && probe_online=0
-
-if [ "$latest" -le $((now - PROBE_EVERY)) ]; then
-  # Ping (short timeout; falls back to 1 when offline). LC_ALL=C so the
-  # `time=` token parses under any locale.
-  ms=$(LC_ALL=C ping -n -c 1 -W 1 "$PROBE_HOST" 2>/dev/null \
-         | awk -F'time[=<]' '/time[=<]/{ split($2,a," "); print a[1]; exit }')
-  if [ -n "$ms" ]; then
-    probe_online=1
-    probe_ping="$ms"
-  else
-    probe_online=0
-    probe_ping=""
+if [ "$probe_online" = "1" ] && [ "$latest" -le $((now - PROBE_EVERY)) ] && command -v curl >/dev/null 2>&1; then
+  pub=$(curl -s -m 2 https://api.ipify.org 2>/dev/null)
+  case "$pub" in
+    [0-9.]*) ;;
+    *) pub=$(curl -s -m 2 https://ifconfig.me 2>/dev/null) ;;
+  esac
+  # sanity: a plausible IPv4 address, else treat as unreachable
+  case "$pub" in
+    ''|*[!0-9.]*|*.*.*.*.*) pub="" ;;
+  esac
+  if [ -n "$pub" ]; then
+    probe_pub="$pub"
+    mkdir -p "$(dirname "$PROBE_FILE")" 2>/dev/null
+    printf "publicIp\t%s\n" "$probe_pub" > "$PROBE_FILE"
   fi
-
-  # Public IP via curl; empty when no route / offline / blocked. Short -m so a
-  # dead endpoint can't stall the shell; on failure we keep the last known.
-  pub=""
-  if [ "$probe_online" = "1" ] && command -v curl >/dev/null 2>&1; then
-    pub=$(curl -s -m 2 https://api.ipify.org 2>/dev/null)
-    case "$pub" in
-      [0-9.]*) ;;
-      *) pub=$(curl -s -m 2 https://ifconfig.me 2>/dev/null) ;;
-    esac
-    # sanity: a plausible IPv4 address, else treat as unreachable
-    case "$pub" in
-      ''|*[!0-9.]*|*.*.*.*.*) pub="" ;;
-    esac
-  fi
-  [ -n "$pub" ] && probe_pub="$pub" && probe_online=1
-
-  mkdir -p "$(dirname "$PROBE_FILE")" 2>/dev/null
-  printf "online\t%s\npingMs\t%s\npublicIp\t%s\n" "$probe_online" "$probe_ping" "$probe_pub" > "$PROBE_FILE"
 fi
 
 # When there's no active interface, the probe can't reasonably report an

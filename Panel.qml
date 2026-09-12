@@ -44,7 +44,7 @@ import "Model.js" as Model
 //   batteryMildPct     default 60    above which it's calm (mild in between)
 //   networkRefreshSeconds default base  network poll period, independent override
 //   networkTopProcesses default 5    rows in the network top-processes table
-//   networkProbeSeconds default 10   seconds between slow internet probes
+//   networkProbeSeconds default 10   seconds between public-IP HTTP probes
 //   networkPingHost     default 1.1.1.1  internet probe (ping/public-IP) host
 //   historyMinutes     default 60    length of the usage-history window
 // Set them with: omarchy bar set obi.stats <key> <value>
@@ -129,8 +129,9 @@ Panel {
   readonly property int networkRefreshSeconds: Math.max(1, parseInt(setting("networkRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
   // Rows in the network "top processes" table.
   readonly property int networkTopProcesses: Math.max(1, parseInt(setting("networkTopProcesses", 5), 10) || 5)
-  // Seconds between slow internet probes (online / ping / public IP). Smallest
-  // cadence to use when the probe itself blocks the poll tick.
+  // Seconds between public-IP HTTP probes. Ping (online + latency) runs every
+  // tick, so this only throttles the external curl — set it higher if you use a
+  // metered link.
   readonly property int networkProbeSeconds: Math.max(3, parseInt(setting("networkProbeSeconds", 10), 10) || 10)
   // Internet probe host (ping target + public-IP sanity route).
   readonly property string networkPingHost: setting("networkPingHost", "1.1.1.1")
@@ -647,9 +648,9 @@ Panel {
     }
   }
 
-  // A single network bar line: direction arrow pinned to the left edge with a
-  // right-aligned rate filling the rest, so the glyph never shifts as the
-  // value changes width and both lines share the same right edge.
+  // A single network bar line: direction arrow at the left edge, a fixed space,
+  // then the value growing right. The arrow is pinned (first element of a
+  // constant-width row) so it never shifts as the value changes width.
   component NetRateRow: Row {
     required property string arrow
     required property string value
@@ -663,12 +664,11 @@ Panel {
       font.bold: true
     }
     Item {
-      Layout.fillWidth: true
+      width: Style.space(4)
       height: 1
     }
     Text {
       textFormat: Text.PlainText
-      horizontalAlignment: Text.AlignRight
       text: value
       color: root.cpuText
       font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -2704,10 +2704,9 @@ Panel {
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(10)
 
-        // Headline: caption + current download/upload rates. Both rates share
-        // the same heading font, and each arrow is pinned (down after the
-        // caption, up against the right edge) with a fixed-width right-aligned
-        // value, so neither glyph shifts as the numbers change.
+        // Headline: caption + current download/upload rates. Both rates share the
+        // same (body) font; within each pair the icon sits flush against its
+        // value and the pair is left-aligned together.
         Row {
           width: parent.width
           spacing: Style.space(10)
@@ -2721,45 +2720,47 @@ Panel {
             font.pixelSize: Style.font.body
             font.bold: true
           }
-          Text {
-            textFormat: Text.PlainText
-            text: "▼"
-            color: root.cpuText
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.heading
-            font.bold: true
-          }
-          Text {
-            textFormat: Text.PlainText
-            horizontalAlignment: Text.AlignRight
-            width: Style.space(64)
-            text: root.netDownText
-            color: root.cpuText
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.heading
-            font.bold: true
+          Row {
+            spacing: Style.space(0)
+            Text {
+              textFormat: Text.PlainText
+              text: "▼"
+              color: root.cpuText
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: root.netDownText
+              color: root.cpuText
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
           }
           Item {
             Layout.fillWidth: true
             height: 1
           }
-          Text {
-            textFormat: Text.PlainText
-            text: "▲"
-            color: root.cpuText
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.heading
-            font.bold: true
-          }
-          Text {
-            textFormat: Text.PlainText
-            horizontalAlignment: Text.AlignRight
-            width: Style.space(64)
-            text: root.netUpText
-            color: root.cpuText
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.heading
-            font.bold: true
+          Row {
+            spacing: Style.space(0)
+            Text {
+              textFormat: Text.PlainText
+              text: "▲"
+              color: root.cpuText
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: root.netUpText
+              color: root.cpuText
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
           }
         }
 

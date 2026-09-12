@@ -121,7 +121,7 @@ omarchy bar set obi.stats topBatteryProcesses 5   # rows in the battery top-proc
 omarchy bar set obi.stats batteryAlarmPct     20  # battery % below this = alarming
 omarchy bar set obi.stats batteryMildPct      60  # at/above this = calm (mild between)
 omarchy bar set obi.stats networkTopProcesses 5   # rows in the network top-processes table
-omarchy bar set obi.stats networkProbeSeconds 10  # seconds between slow internet probes
+omarchy bar set obi.stats networkProbeSeconds 10  # seconds between public-IP HTTP probes (ping runs every tick)
 omarchy bar set obi.stats networkPingHost   1.1.1.1  # internet probe (ping/public-IP) host
 omarchy bar set obi.stats historyMinutes     60   # history graph window
 omarchy bar set obi.stats topProcesses        8   # rows in the process table
@@ -147,7 +147,7 @@ to different values and each stat samples on its own cadence (e.g. CPU every
 | `batteryAlarmPct` | 20 | battery % below this is alarming |
 | `batteryMildPct` | 60 | battery % at/above this is calm (mild between) |
 | `networkTopProcesses` | 5 | rows in the network top-processes table |
-| `networkProbeSeconds` | 10 | seconds between slow internet probes (ping / online / public IP) |
+| `networkProbeSeconds` | 10 | seconds between public-IP HTTP probes (ping + internet state run every tick) |
 | `networkPingHost` | `1.1.1.1` | internet probe host (ping target + public-IP route) |
 | `historyMinutes` | 60 | how long the moving graph window spans |
 | `topProcesses` | 8 | how many heavy processes to list (CPU) |
@@ -198,9 +198,10 @@ net.sh          /proc/net/dev + ip/iw + ss -tinp sampler (rates, totals, links, 
 - `net.sh` reads `/proc/net/dev` for aggregate rates and lifetime totals, `ip
   route get`/`ip -j addr`/`sysfs`/`iw` for the link facts (interface, MAC, SSID,
   local IP, gateway), and `ss -tinp` (netlink diag, readable for the shell's own
-  user) for per-process TCP byte counters — deltad over a window for KB/s. Slow
-  internet probes (ping latency, online state, public IP) run on a throttled
-  internal cadence and are cached, so the per-tick sample stays fast. Run
+  user) for per-process TCP byte counters — deltad over a window for KB/s. The
+  ICMP ping (internet up/down + latency) runs every tick (respecting
+  `networkRefreshSeconds`); only the public-IP HTTP fetch is throttled to
+  `networkProbeSeconds` and cached. Run
   `omarchy-shell obi.stats openNetwork` to open the network dropdown.
 
 ### Why `obi.stats` and not `omarchy.stats`
