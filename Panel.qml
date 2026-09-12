@@ -752,7 +752,7 @@ Panel {
                 // Name: fills the space left over by pinned pid + pct columns.
                 Text {
                   textFormat: Text.PlainText
-                  text: parent.info ? parent.info.comm : ""
+                  text: info ? info.comm : ""
                   elide: Text.ElideRight
                   width: Math.max(0, parent.width - Style.space(120))
                   anchors.verticalCenter: parent.verticalCenter
@@ -762,7 +762,7 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: parent.info ? parent.info.pid : ""
+                  text: info ? info.pid : ""
                   width: Style.space(56)
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
@@ -777,10 +777,10 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: Style.space(60)
-                  text: parent.info ? Model.formatPct(parent.info.pct) : ""
+                  text: info ? Model.formatPct(info.pct) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
-                  color: root.usageColor(parent.info ? parent.info.pct : 0)
+                  color: root.usageColor(info ? info.pct : 0)
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.body
                   font.bold: true
@@ -1255,7 +1255,7 @@ Panel {
                 // Name: fills the space left over by pinned pid + read + write.
                 Text {
                   textFormat: Text.PlainText
-                  text: parent.info ? parent.info.comm : ""
+                  text: info ? info.comm : ""
                   elide: Text.ElideRight
                   width: Math.max(0, parent.width - Style.space(180))
                   anchors.verticalCenter: parent.verticalCenter
@@ -1265,7 +1265,7 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: parent.info ? parent.info.pid : ""
+                  text: info ? info.pid : ""
                   width: Style.space(52)
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
@@ -1280,7 +1280,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: Style.space(60)
-                  text: parent.info ? Model.formatRate(parent.info.read) : ""
+                  text: info ? Model.formatRate(info.read) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
                   color: root.cpuText
@@ -1294,7 +1294,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   width: Style.space(56)
-                  text: parent.info ? Model.formatRate(parent.info.write) : ""
+                  text: info ? Model.formatRate(info.write) : ""
                   horizontalAlignment: Text.AlignRight
                   anchors.verticalCenter: parent.verticalCenter
                   color: root.cpuData
