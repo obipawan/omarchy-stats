@@ -163,6 +163,16 @@ Panel {
     return root.cpuText
   }
 
+  // Battery HEALTH tint. Unlike charge %, a HIGHER health is better, so the
+  // polarity is the same as the usage tiers: >= 80% calm, 50–80 mild, < 50
+  // alarming.
+  function batteryHealthColor(percent) {
+    var v = Number(percent) || 0
+    if (v >= 80) return root.cpuText
+    if (v >= 50) return Color.accent
+    return Color.urgent
+  }
+
   // ---- CPU state --------------------------------------------------------
   property var cpuState: ({ total: 0, cores: [], procs: [] })
   property var cpuHistory: []
@@ -882,11 +892,7 @@ Panel {
     }
     if (root.activeStat.id === "ram")
       return root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
-    if (root.activeStat.id === "battery") {
-      if (!root.batteryState.ready) return "No battery"
-      var time = " — " + Model.formatPct(root.batteryState.pct)
-      return root.batteryStatusText + time + (root.batteryState.charging && root.batteryTimeText !== "--" ? "  ·  full in " + root.batteryTimeText : "")
-    }
+    if (root.activeStat.id === "battery") return ""
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
 
@@ -2301,17 +2307,16 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          // Hero: big filled battery glyph with the % overlaid inside, the
-          // charging bolt, and a "on AC / on battery" caption + time-to-full /
-          // time-to-empty. Tinted by the (reversed) charge thresholds.
+          // Hero: big battery glyph (no % inside), with the status + time +
+          // % readout to its right. Tinted by the (reversed) charge thresholds.
           Row {
             width: parent.width
             spacing: Style.space(14)
 
-            // Big icon: a square the size of the hero icon, % centered on top.
+            // Big icon: a large square holding just the battery glyph.
             Item {
-              width: Style.space(96)
-              height: Style.space(96)
+              width: Style.space(120)
+              height: Style.space(120)
               Text {
                 anchors.fill: parent
                 textFormat: Text.PlainText
@@ -2320,25 +2325,12 @@ Panel {
                 text: root.batteryIconGlyph()
                 color: root.batteryColor(root.batteryState.pct)
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.space(64)
+                font.pixelSize: Style.space(84)
                 font.bold: true
               }
-              Text {
-                anchors.fill: parent
-                textFormat: Text.PlainText
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                text: Model.batteryPctText(root.batteryState.pct)
-                color: root.cpuText
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.heading
-                font.bold: true
-              }
-              // No separate bolt overlay: while charging, batteryIconGlyph()
-              // selects omarchy's bolt-in-battery icon tier.
             }
 
-            // Caption block: status + time-to-full/empty in a big readout.
+            // Caption block: status, time-to-full/empty, then the % below it.
             Column {
               spacing: Style.space(6)
 
@@ -2363,13 +2355,14 @@ Panel {
                 font.bold: true
               }
 
+              // The % readout sits below the time, its own line.
               Text {
-                visible: root.batteryState.model !== ""
                 textFormat: Text.PlainText
-                text: root.batteryState.model
-                color: root.cpuDim
+                text: Model.batteryPctText(root.batteryState.pct)
+                color: root.batteryColor(root.batteryState.pct)
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.bodySmall
+                font.pixelSize: Style.font.heading
+                font.bold: true
               }
             }
           }
@@ -2378,49 +2371,75 @@ Panel {
             foreground: root.cpuText
           }
 
-          // ---- Power details ----
+          // ---- Battery details: one stat per row (label left / value right) ----
           PanelSectionHeader {
-            text: "POWER DETAILS"
+            text: "BATTERY DETAILS"
             foreground: root.cpuText
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             width: parent.width
           }
 
-          // Row 1: Power (W), Current (mA), Voltage (V).
-          Row {
+          Column {
             width: parent.width
-            spacing: Style.space(10)
-            Text { textFormat: Text.PlainText; text: "POWER"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: Model.formatWatts(root.batteryState.power); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
-            Item { Layout.fillWidth: true; height: 1 }
-            Text { textFormat: Text.PlainText; text: "CURRENT"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: Model.formatMillis(root.batteryState.current); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
-            Item { Layout.fillWidth: true; height: 1 }
-            Text { textFormat: Text.PlainText; text: "VOLTAGE"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: (root.batteryState.voltage >= 0 ? root.batteryState.voltage + "V" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
-          }
+            spacing: Style.space(6)
 
-          // Row 2: Health (%), Cycles, Temperature.
-          Row {
-            width: parent.width
-            spacing: Style.space(10)
-            Text { textFormat: Text.PlainText; text: "HEALTH"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: Model.formatPct(root.batteryState.health); color: root.usageColor(root.batteryState.health); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
-            Item { Layout.fillWidth: true; height: 1 }
-            Text { textFormat: Text.PlainText; text: "CYCLES"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: (root.batteryState.cycles >= 0 ? root.batteryState.cycles + "" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
-            Item { Layout.fillWidth: true; height: 1 }
-            Text { textFormat: Text.PlainText; text: "TEMP"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: Model.formatTemp(root.batteryState.temp); color: root.usageColor(root.batteryState.temp); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
-          }
-
-          // Energy row: remaining / full capacity (Wh) — richer than just %.
-          Row {
-            visible: root.batteryState.energy >= 0 && root.batteryState.energyFull > 0
-            width: parent.width
-            spacing: Style.space(10)
-            Text { textFormat: Text.PlainText; text: "ENERGY"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
-            Text { textFormat: Text.PlainText; text: Math.min(root.batteryState.energy, root.batteryState.energyFull) + "Wh / " + root.batteryState.energyFull + "Wh"; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            // Power (W) — signed: +charging / -discharge.
+            Row {
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "POWER"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: Model.formatWatts(root.batteryState.power); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
+            // Current (mA / A).
+            Row {
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "CURRENT"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: Model.formatMillis(root.batteryState.current); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
+            // Voltage (V).
+            Row {
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "VOLTAGE"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: (root.batteryState.voltage >= 0 ? root.batteryState.voltage + "V" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
+            // Health (%) — higher is better (batteryHealthColor).
+            Row {
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "HEALTH"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: Model.formatPct(root.batteryState.health); color: root.batteryHealthColor(root.batteryState.health); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
+            // Cycles.
+            Row {
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "CYCLES"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: (root.batteryState.cycles >= 0 ? root.batteryState.cycles + "" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
+            // Temperature.
+            Row {
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "TEMP"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: Model.formatTemp(root.batteryState.temp); color: root.usageColor(root.batteryState.temp); font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
+            // Energy (remaining / full Wh).
+            Row {
+              visible: root.batteryState.energy >= 0 && root.batteryState.energyFull > 0
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText; text: "ENERGY"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text { textFormat: Text.PlainText; text: Math.min(root.batteryState.energy, root.batteryState.energyFull) + "Wh / " + root.batteryState.energyFull + "Wh"; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+            }
           }
 
           PanelSeparator {
@@ -2474,13 +2493,6 @@ Panel {
             foreground: root.cpuText
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             width: parent.width
-          }
-          Text {
-            textFormat: Text.PlainText
-            text: "Highest CPU consumers (the dominant battery drain)"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.bodySmall
           }
 
           Column {
