@@ -1,12 +1,14 @@
 #!/bin/bash
 # obi.stats battery / power sampler.
 #
-# Pure /sys + /proc reads (no upower/acpi/btop dependency). Reads the ACPI
-# power-supply tree in /sys/class/power_supply, discovers the battery (BAT*) and
-# the AC adapter (AC*/ADP*), and computes charge level, voltage, current, power,
-# health, cycles, temperature and time-to-full/empty. It also samples per-process
-# CPU usage (the dominant battery drain) so the panel can list the top consumers.
-# Everything the panel needs comes back tab-separated:
+# /sys + /proc reads (no acpi/btop dependency). Reads the ACPI power-supply tree
+# in /sys/class/power_supply, discovers the battery (BAT*) and the AC adapter
+# (AC*/ADP*), and computes charge level, voltage, current, power, health, cycles,
+# temperature. Time-to-full/empty prefers upower's filtered TimeToFull/TimeToEmpty
+# (when the daemon is reachable — far more stable than a single instantaneous
+# /sys power sample), falling back to our own voltage*current estimate. It also
+# samples per-process CPU usage (the dominant battery drain) so the panel can
+# list the top consumers. Everything the panel needs comes back tab-separated:
 #
 #   present\t<0|1>               a battery exists
 #   state\t<charging|discharging|full|not-charging|unknown>
@@ -147,6 +149,26 @@ BEGIN {
   printf "model\t%s\n", model
 }
 '
+
+# --- override time estimates with upower's smoothed values ----------------
+# Our timeTo* maths uses a single instantaneous power sample (voltage*current),
+# which flickers a lot and makes the "time left" jump ~seconds to seconds. upower
+# smooths the energy rate over a history window, so its TimeToEmpty/TimeToFull
+# (seconds) are far more stable. Prefer those when the daemon is reachable; fall
+# back to our own computed values otherwise. Last-write-wins in the panel parser,
+# so re-emitting these lines after the awk block overrides the raw estimates.
+# NOTE: upower's device path is a DBus object path (/org/freedesktop/UPower/
+# devices/battery_<NAME>), NOT a filesystem glob under /org/... — derive it from
+# the /sys battery name we already discovered.
+if command -v busctl >/dev/null 2>&1 && [ -n "$BAT" ]; then
+  bat_name=$(basename "$BAT")
+  upower_dev="/org/freedesktop/UPower/devices/battery_${bat_name}"
+  up_ttf=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device TimeToFull  2>/dev/null | awk '{print $2}')
+  up_tte=$(busctl --no-pager get-property org.freedesktop.UPower "$upower_dev" org.freedesktop.UPower.Device TimeToEmpty 2>/dev/null | awk '{print $2}')
+  # Values are 0 when not in that state; only print when upower reports a real one.
+  if [ "${up_ttf:-0}" -gt 0 ] 2>/dev/null; then printf "timeToFull\t%.0f\n" "$up_ttf"; fi
+  if [ "${up_tte:-0}" -gt 0 ] 2>/dev/null; then printf "timeToEmpty\t%.0f\n" "$up_tte"; fi
+fi
 
 # --- top CPU consumers (drain proxy) ----------------------------------------
 # CPU activity is the dominant battery drain on this class of device and is the
