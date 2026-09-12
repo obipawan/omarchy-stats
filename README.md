@@ -52,12 +52,32 @@ A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status 
     reachable (like omarchy does — its energy-based % and smoothed time), falling
     back to our own `/sys` charge/power estimates otherwise, so the numbers match
     omarchy and stay stable instead of flickering.
-- Network — the bar item is present; its dropdown is a placeholder for now.
+- **Network** — fully wired end to end:
+  - A two-line bar item showing the current **download / upload rates** (`▼ 27KB/s`
+    over `▲ 15KB/s`), same font and no threshold tint.
+  - A dropdown with a **dual-axis usage history graph**: positive y is upload
+    throughput, negative y is download throughput (both KB/s), one live sample
+    per column — mirroring the disk I/O graph's polarity.
+  - **Lifetime totals** (download/upload in MB, or GB once they cross a GiB) and
+    a live connection detail block: **internet up/down**, **ping** (ms),
+    **interface** (Wifi/Ethernet), **physical address** (MAC), **SSID**
+    (wifi only), **local IP** and **public IP**.
+  - A **top processes by network** table (name · pid · upload KB/s · download
+    KB/s).
+  - Aggregate rates + totals from `/proc/net/dev`, link facts from `ip`/`iw`,
+    and per-process rates from `ss -tinp` — no `nethogs`/`iftop` dependency and
+    no root (see the note below).
 
 > **Battery "top processes" are a drain proxy, not measured watts.** Linux
 > exposes no per-process power meter, so the dropdown lists the top *CPU*
 > consumers (the dominant battery drain), sampled from the same `/proc` window
 > cpu.sh uses. It's labelled as such in the panel.
+
+> **Network per-process rates are TCP-attributed.** `ss -tinp` exposes cumulative
+> per-socket byte counters (readable for the shell's own user, no root), so the
+> top-processes table covers TCP traffic. UDP/QUIC bytes still appear in the
+> aggregate down/up and lifetime totals but can't be split per process without
+> root (`nethogs`/`iftop` need exactly that). It's labelled in the dropdown.
 
 ## Install
 
@@ -74,14 +94,14 @@ Omarchy clones the repo, validates `manifest.json`, and installs it under
 omarchy bar put obi.stats --section center
 ```
 
-> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`, `disk.sh`) and the
-> install helper (`gpu-install.sh`) must be executable. Git preserves the
-> executable bits set in this repo.
+> Permissions: the sampler scripts (`cpu.sh`, `gpu.sh`, `disk.sh`, `ram.sh`,
+> `battery.sh`, `net.sh`) and the install helper (`gpu-install.sh`) must be
+> executable. Git preserves the executable bits set in this repo.
 
 ### Manual / from source
 
 Copy the repository contents into `~/.config/omarchy/plugins/obi.stats/`
-(`chmod +x cpu.sh gpu.sh gpu-install.sh disk.sh`), then `omarchy restart shell`.
+(`chmod +x *.sh`), then `omarchy restart shell`.
 
 ## Configuration
 
@@ -94,11 +114,15 @@ omarchy bar set obi.stats cpuRefreshSeconds   2   # CPU poll period (defaults to
 omarchy bar set obi.stats gpuRefreshSeconds   2   # GPU poll period (defaults to base)
 omarchy bar set obi.stats fileioRefreshSeconds 2  # disk I/O poll period (defaults to base)
 omarchy bar set obi.stats batteryRefreshSeconds 2  # battery poll period (defaults to base)
+omarchy bar set obi.stats networkRefreshSeconds 2  # network poll period (defaults to base)
 omarchy bar set obi.stats diskMount           /   # filesystem monitored for space
 omarchy bar set obi.stats diskTopProcesses    5   # rows in the disk top-I/O table
 omarchy bar set obi.stats topBatteryProcesses 5   # rows in the battery top-processes table
 omarchy bar set obi.stats batteryAlarmPct     20  # battery % below this = alarming
 omarchy bar set obi.stats batteryMildPct      60  # at/above this = calm (mild between)
+omarchy bar set obi.stats networkTopProcesses 5   # rows in the network top-processes table
+omarchy bar set obi.stats networkProbeSeconds 10  # seconds between slow internet probes
+omarchy bar set obi.stats networkPingHost   1.1.1.1  # internet probe (ping/public-IP) host
 omarchy bar set obi.stats historyMinutes     60   # history graph window
 omarchy bar set obi.stats topProcesses        8   # rows in the process table
 omarchy bar set obi.stats calmLimit           30  # usage color tier: below = calm
@@ -116,11 +140,15 @@ to different values and each stat samples on its own cadence (e.g. CPU every
 | `gpuRefreshSeconds` | = refreshSeconds | GPU poll period (independent override) |
 | `fileioRefreshSeconds` | = refreshSeconds | disk I/O + space poll period (independent override) |
 | `batteryRefreshSeconds` | = refreshSeconds | battery poll period (independent override) |
+| `networkRefreshSeconds` | = refreshSeconds | network poll period (independent override) |
 | `diskMount` | `/` | filesystem the disk stat monitors for space |
 | `diskTopProcesses` | 5 | rows in the disk top-I/O table |
 | `topBatteryProcesses` | 5 | rows in the battery top-processes table |
 | `batteryAlarmPct` | 20 | battery % below this is alarming |
 | `batteryMildPct` | 60 | battery % at/above this is calm (mild between) |
+| `networkTopProcesses` | 5 | rows in the network top-processes table |
+| `networkProbeSeconds` | 10 | seconds between slow internet probes (ping / online / public IP) |
+| `networkPingHost` | `1.1.1.1` | internet probe host (ping target + public-IP route) |
 | `historyMinutes` | 60 | how long the moving graph window spans |
 | `topProcesses` | 8 | how many heavy processes to list (CPU) |
 | `calmLimit` / `mildLimit` | 30 / 60 | usage-coloring thresholds |
@@ -141,6 +169,7 @@ gpu-install.sh  one-click terminal helper behind the setup card's install button
 disk.sh         df + /proc diskstats + /proc/<pid>/io sampler (space + I/O rates)
 ram.sh          /proc/meminfo + /proc/<pid>/status sampler (RAM + per-proc RSS)
 battery.sh      /sys/class/power_supply + /proc sampler (charge, power, health)
+net.sh          /proc/net/dev + ip/iw + ss -tinp sampler (rates, totals, links, per-proc)
 ```
 
 - `Panel.qml` is the bar-widget entry point *and* the dropdown host — one widget
@@ -166,6 +195,13 @@ battery.sh      /sys/class/power_supply + /proc sampler (charge, power, health)
   temperature and time-to-full/empty from raw µAh/µV/µW values, then samples
   per-process CPU (the drain proxy) from `/proc`. Run
   `omarchy-shell obi.stats openBattery` to open the battery dropdown.
+- `net.sh` reads `/proc/net/dev` for aggregate rates and lifetime totals, `ip
+  route get`/`ip -j addr`/`sysfs`/`iw` for the link facts (interface, MAC, SSID,
+  local IP, gateway), and `ss -tinp` (netlink diag, readable for the shell's own
+  user) for per-process TCP byte counters — deltad over a window for KB/s. Slow
+  internet probes (ping latency, online state, public IP) run on a throttled
+  internal cadence and are cached, so the per-tick sample stays fast. Run
+  `omarchy-shell obi.stats openNetwork` to open the network dropdown.
 
 ### Why `obi.stats` and not `omarchy.stats`
 
@@ -180,8 +216,9 @@ matches the install directory, which keeps `cpu.sh` discoverable.
 - On near-monochrome themes the usage-color tiers are intentionally subtle
   (theme `foreground`/`accent`/`urgent` are close together).
 - Each dropdown has a **fixed height**: the top-processes lists always reserve
-  `topProcesses` (CPU) / `diskTopProcesses` (I/O) rows, so the panel doesn't
-  resize as processes appear and disappear. Empty ranks are simply blank.
+  `topProcesses` (CPU) / `diskTopProcesses` (I/O) / `networkTopProcesses`
+  (network) rows, so the panel doesn't resize as processes appear and
+  disappear. Empty ranks are simply blank.
 - The disk bar's two lines are threshold-tinted on the **value only**: the `U:`
   (used) value is lower-is-better (calm below `calmLimit`, mild up to
   `mildLimit`, alarming strictly above it), and the `F:` (free) value is

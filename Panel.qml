@@ -24,8 +24,11 @@ import "Model.js" as Model
 // memory-pressure speedometer, usage history, a user/system/free/swap
 // distribution, and top memory processes. Battery is wired too: a one-line
 // "HH:MM  <icon>NN%" bar item plus a dropdown with a big charge icon, power
-// details (W / mA / V / health / cycles / temp) and top processes. The
-// remaining stat (network) still shows a placeholder.
+// details (W / mA / V / health / cycles / temp) and top processes. Network is
+// wired too: a two-line down/up rate bar item plus a dropdown with a dual-axis
+// download/upload history, aggregate totals, connection details (internet
+// state / ping / interface / MAC / SSID / local+public IP) and top processes
+// by network.
 //
 // Per-widget settings come from the shell.json entry (see `setting()`), e.g.:
 //   topProcesses       default 8     how many heavy processes to list (CPU)
@@ -39,6 +42,10 @@ import "Model.js" as Model
 //   topBatteryProcesses default 5    rows in the battery top-processes table
 //   batteryAlarmPct    default 20    battery % below which it's alarming
 //   batteryMildPct     default 60    above which it's calm (mild in between)
+//   networkRefreshSeconds default base  network poll period, independent override
+//   networkTopProcesses default 5    rows in the network top-processes table
+//   networkProbeSeconds default 10   seconds between slow internet probes
+//   networkPingHost     default 1.1.1.1  internet probe (ping/public-IP) host
 //   historyMinutes     default 60    length of the usage-history window
 // Set them with: omarchy bar set obi.stats <key> <value>
 Panel {
@@ -75,6 +82,7 @@ Panel {
   readonly property string diskScript: root.pluginDir + "/disk.sh"
   readonly property string ramScript: root.pluginDir + "/ram.sh"
   readonly property string batteryScript: root.pluginDir + "/battery.sh"
+  readonly property string netScript: root.pluginDir + "/net.sh"
   // Resolve from the manifest id (moduleName), not a hardcoded folder, so the
   // script path is correct however Omarchy installed the plugin — `plugins/<id>/`.
   readonly property string pluginDir:
@@ -115,6 +123,17 @@ Panel {
   // up to batteryMildPct = mild (accent), at/above batteryMildPct = calm.
   readonly property int batteryAlarmPct: Math.max(1, parseInt(setting("batteryAlarmPct", 20), 10) || 20)
   readonly property int batteryMildPct: Math.max(1, parseInt(setting("batteryMildPct", 60), 10) || 60)
+  // Network polls the aggregate rates each tick (a short two-sample window,
+  // like disk I/O); the slow internet probes (ping / online / public IP) run
+  // on their own throttled cadence inside net.sh, kept independent of this.
+  readonly property int networkRefreshSeconds: Math.max(1, parseInt(setting("networkRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
+  // Rows in the network "top processes" table.
+  readonly property int networkTopProcesses: Math.max(1, parseInt(setting("networkTopProcesses", 5), 10) || 5)
+  // Seconds between slow internet probes (online / ping / public IP). Smallest
+  // cadence to use when the probe itself blocks the poll tick.
+  readonly property int networkProbeSeconds: Math.max(3, parseInt(setting("networkProbeSeconds", 10), 10) || 10)
+  // Internet probe host (ping target + public-IP sanity route).
+  readonly property string networkPingHost: setting("networkPingHost", "1.1.1.1")
   readonly property int historySeconds: Math.max(30, parseInt(setting("historyMinutes", 60), 10) || 60) * 60
 
   // Usage tint thresholds, as percent. Settings (e.g. `omarchy bar set
@@ -311,6 +330,39 @@ Panel {
       ? (batteryState.discharging ? "On battery" : "On AC")
       : "No battery"
 
+  // ---- Network state ----------------------------------------------------
+  // Snapshot of the aggregate rates (for the bar + graph), cumulative totals
+  // and connection details from net.sh, plus per-process TCP up/down. `ready`
+  // means an active interface produced a sample. `online` / `pingMs` /
+  // `publicIp` come from net.sh's throttled probe and can lag a tick.
+  property var netState: ({ iface: "", type: "unknown", mac: "", ssid: "",
+                            ip: "", gateway: "", connected: false, online: false,
+                            pingMs: -1, publicIp: "", down: -1, up: -1,
+                            totalDown: -1, totalUp: -1, ready: false, procs: [] })
+  property var netHistory: []
+  property bool netPolling: false
+
+  // Top processes by network (sum of up+down, TCP-attributed).
+  readonly property var netTopProcs: Model.topNetProcs(netState.procs, networkTopProcesses)
+  // Throughput history, one column per bucket holding the down/up pair.
+  readonly property var netGraph: Model.scrollNetWindow(netHistory, historyBuckets)
+  // Heights normalized to 0..1 against the shared down+up max so the two bars
+  // of a column are comparable and the plot doesn't rescale each tick.
+  readonly property var netGraphHeights: Model.normalizeNet(netGraph)
+  // Current aggregate rates, formatted for the bar / headline ("27KB/s").
+  readonly property string netDownText: Model.formatNetRate(netState.down)
+  readonly property string netUpText: Model.formatNetRate(netState.up)
+  // Lifetime totals.
+  readonly property string netTotalDownText: Model.formatNetTotal(netState.totalDown)
+  readonly property string netTotalUpText: Model.formatNetTotal(netState.totalUp)
+  // Interface label for the detail block ("Wifi" / "Ethernet").
+  readonly property string netInterfaceText:
+    netState.type === "wifi" ? "Wifi" : (netState.type === "ethernet" ? "Ethernet" : "--")
+  // Internet state: UP when the probe reached the net, DOWN when a link exists
+  // but the probe failed, NO LINK when there is no active interface.
+  readonly property string netOnlineText:
+    netState.online ? "UP" : (netState.connected ? "DOWN" : "NO LINK")
+
   // ---- Bar widget sizing ----
   // CPU and GPU items are two-line text stacks (label over %) instead of an
   // icon, so they need a bit more height than the icon slot and enough width
@@ -334,6 +386,10 @@ Panel {
   // at a normal gap while giving the bigger icon room.
   readonly property int batteryBarHeight: Style.bar.sizeHorizontal
   readonly property int batteryBarWidth: Style.space(40)
+  // Network bar: a two-line stack of the current down/up rates (no label),
+  // so it needs enough width for e.g. "27KB/s" and "1.5MB/s".
+  readonly property int netBarHeight: Style.bar.sizeHorizontal
+  readonly property int netBarWidth: Style.space(58)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -350,7 +406,7 @@ Panel {
   function isLiveStat(stat) {
     if (!stat) return false
     var id = String(stat.id)
-    return id === "cpu" || id === "gpu" || id === "disk" || id === "ram" || id === "battery"
+    return id === "cpu" || id === "gpu" || id === "disk" || id === "ram" || id === "battery" || id === "network"
   }
 
   function barItemWidth(stat) {
@@ -359,6 +415,7 @@ Panel {
     if (stat && String(stat.id) === "disk") return root.diskBarWidth
     if (stat && String(stat.id) === "ram") return root.ramBarWidth
     if (stat && String(stat.id) === "battery") return root.batteryBarWidth
+    if (stat && String(stat.id) === "network") return root.netBarWidth
     return Style.bar.iconSlot
   }
 
@@ -368,6 +425,7 @@ Panel {
     if (stat && String(stat.id) === "disk") return root.diskBarHeight
     if (stat && String(stat.id) === "ram") return root.ramBarHeight
     if (stat && String(stat.id) === "battery") return root.batteryBarHeight
+    if (stat && String(stat.id) === "network") return root.netBarHeight
     return Style.bar.sizeHorizontal
   }
 
@@ -451,7 +509,7 @@ Panel {
 
       // CPU/GPU: label over the live %, tinted by the usage thresholds.
       Text {
-        visible: stat.id !== "disk" && stat.id !== "battery"
+        visible: stat.id !== "disk" && stat.id !== "battery" && stat.id !== "network"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
         text: stat.label.toUpperCase()
@@ -462,7 +520,7 @@ Panel {
       }
       Text {
         id: pctLine
-        visible: stat.id !== "disk" && stat.id !== "battery"
+        visible: stat.id !== "disk" && stat.id !== "battery" && stat.id !== "network"
         textFormat: Text.PlainText
         horizontalAlignment: Text.AlignHCenter
         text: root.livePctText(stat.id)
@@ -521,6 +579,33 @@ Panel {
           font.pixelSize: Math.max(19, Style.font.caption + 9)
           font.bold: true
           Layout.alignment: Qt.AlignVCenter
+        }
+      }
+
+      // Network: two lines of the current rates, download over upload. Same
+      // font and no threshold tint (the user asked for plain rates); a small
+      // down/up arrow distinguishes the direction at a glance.
+      Column {
+        visible: stat.id === "network"
+        spacing: Style.space(0)
+        Layout.alignment: Qt.AlignHCenter
+        Text {
+          textFormat: Text.PlainText
+          horizontalAlignment: Text.AlignHCenter
+          text: "▼ " + root.netDownText
+          color: root.cpuText
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(7, Style.font.caption - 2)
+          font.bold: true
+        }
+        Text {
+          textFormat: Text.PlainText
+          horizontalAlignment: Text.AlignHCenter
+          text: "▲ " + root.netUpText
+          color: root.cpuText
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Math.max(7, Style.font.caption - 2)
+          font.bold: true
         }
       }
 
@@ -607,6 +692,9 @@ Panel {
       return stat.label + " — " + charge + "  ·  " + root.batteryStatusText +
              (t && t !== "full" ? "  ·  " + t : "")
     }
+    if (stat.id === "network")
+      return stat.label + " — ▼ " + root.netDownText + "  ▲ " + root.netUpText +
+             (root.netState.iface !== "" ? "  ·  " + root.netInterfaceText : "")
     return stat.label
   }
 
@@ -633,6 +721,7 @@ Panel {
     else if (stat.id === "disk") refreshDisk()
     else if (stat.id === "ram") refreshRam()
     else if (stat.id === "battery") refreshBattery()
+    else if (stat.id === "network") refreshNetwork()
     root.controller.show()
   }
 
@@ -862,6 +951,45 @@ Panel {
     onTriggered: { if (!root.batteryPolling) root.refreshBattery() }
   }
 
+  // ============================ Network polling ==========================
+  // net.sh computes aggregate rates over a short two-sample window (like disk
+  // I/O) and runs the slow internet probes (ping / online / public IP) on an
+  // internal throttle so the per-tick sample stays fast. The window is a
+  // fraction of the poll interval, same rule as the other samplers.
+  readonly property string networkSampleWindow:
+    String(Math.max(0.2, Math.round(root.networkRefreshSeconds * 0.4 * 100) / 100))
+  function refreshNetwork() {
+    if (root.netPolling) return
+    root.netPolling = true
+    netProc.command = [root.netScript, root.networkSampleWindow, String(root.networkProbeSeconds)]
+    netProc.running = true
+  }
+
+  Process {
+    id: netProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onNetFinished(text)
+    }
+  }
+
+  function onNetFinished(raw) {
+    root.netPolling = false
+    var parsed = Model.parseNetworkOutput(raw)
+    root.netState = parsed
+    var now = Date.now() / 1000
+    // Only a live sample feeds the throughput history graph.
+    if (parsed.ready) root.netHistory = Model.appendNetHistory(root.netHistory, now, parsed.down, parsed.up, root.historySeconds)
+  }
+
+  Timer {
+    id: netPollTimer
+    interval: root.networkRefreshSeconds * 1000
+    repeat: true
+    running: true
+    onTriggered: { if (!root.netPolling) root.refreshNetwork() }
+  }
+
   // Hero text: for CPU the title is "CPU CORES"; for GPU it's the matching
   // "GPU CORES" (the vendor labels it engines, but "CORES" keeps the pair
   // visually consistent). Neither repeats the stat label in meta — other stats
@@ -874,6 +1002,7 @@ Panel {
     if (root.activeStat.id === "disk") return "DISK I/O"
     if (root.activeStat.id === "ram") return "RAM USAGE"
     if (root.activeStat.id === "battery") return "BATTERY"
+    if (root.activeStat.id === "network") return "NETWORK"
     return root.activeStat.label
   }
 
@@ -893,6 +1022,9 @@ Panel {
     if (root.activeStat.id === "ram")
       return root.ramMemText + (root.ramState.swapTotal > 0 ? "  ·  swap " + root.ramSwapText : "")
     if (root.activeStat.id === "battery") return ""
+    if (root.activeStat.id === "network")
+      return "▼ " + root.netDownText + "  ▲ " + root.netUpText +
+             (root.netState.iface !== "" ? "  ·  " + root.netInterfaceText : "")
     return Model.sectionTitle(root.activeStat) + " — coming soon"
   }
 
@@ -2551,9 +2683,287 @@ Panel {
         }
       }
 
+      // ==================== Network body =================================
+      Column {
+        visible: root.activeStat && root.activeStat.id === "network"
+        width: dropdownColumn.width - Style.space(8)
+        spacing: Style.space(10)
+
+        // Headline: caption + current download rate, upload rate on the right,
+        // like the other stats' TOTAL/USAGE row.
+        Row {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Text {
+            id: netTrafficLabel
+            textFormat: Text.PlainText
+            text: "TRAFFIC"
+            color: root.cpuDim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            anchors.baseline: netTrafficLabel.baseline
+            text: "▼ " + root.netDownText
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.heading
+            font.bold: true
+          }
+          Item {
+            Layout.fillWidth: true
+            height: 1
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: "▲ " + root.netUpText
+            color: root.cpuText
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+        }
+
+        // ---- Usage history ---- dual-axis: positive y = upload, negative y =
+        // download (mirrors the disk I/O graph's write/read polarity).
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        PanelSectionHeader {
+          text: "USAGE HISTORY"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
+
+        Item {
+          width: parent.width
+          height: Style.space(70)
+          clip: true
+          Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.04)
+          }
+          // Zero line at the vertical middle.
+          Rectangle {
+            width: parent.width
+            height: 1
+            y: parent.height / 2
+            color: Qt.rgba(root.cpuText.r, root.cpuText.g, root.cpuText.b, 0.12)
+          }
+          Row {
+            id: netGraphRow
+            anchors.fill: parent
+            spacing: Style.space(1)
+            Repeater {
+              model: root.netGraphHeights
+              Item {
+                required property var modelData
+                width: Style.space(3)
+                height: netGraphRow.height
+                // Upload bar grows UP from the zero line (positive).
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  y: parent.height / 2 - Math.max(1, Math.round(modelData.up * parent.height / 2))
+                  width: Style.space(3)
+                  height: Math.max(1, Math.round(modelData.up * parent.height / 2))
+                  color: root.cpuData
+                }
+                // Download bar grows DOWN from the zero line (negative).
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  y: parent.height / 2
+                  width: Style.space(3)
+                  height: Math.max(1, Math.round(modelData.down * parent.height / 2))
+                  color: root.cpuDim
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Connection details ---- labels left, live values right.
+        Column {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "TOTAL DOWNLOAD"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: root.netTotalDownText; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "TOTAL UPLOAD"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: root.netTotalUpText; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "INTERNET"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: root.netOnlineText; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "PING"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: (root.netState.pingMs >= 0 ? Math.round(root.netState.pingMs) + " ms" : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "INTERFACE"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: root.netInterfaceText; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "PHYSICAL ADDR"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: (root.netState.mac !== "" ? root.netState.mac : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          // SSID: wifi only — the row is hidden entirely for ethernet.
+          Row {
+            visible: root.netState.ssid !== ""
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "SSID"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: root.netState.ssid; color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "LOCAL IP"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: (root.netState.ip !== "" ? root.netState.ip : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text { textFormat: Text.PlainText; text: "PUBLIC IP"; color: root.cpuDim; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body }
+            Item { Layout.fillWidth: true; height: 1 }
+            Text { textFormat: Text.PlainText; text: (root.netState.publicIp !== "" ? root.netState.publicIp : "--"); color: root.cpuText; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.cpuText
+        }
+
+        // ---- Top processes by network ----
+        PanelSectionHeader {
+          text: "TOP PROCESSES"
+          foreground: root.cpuText
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          width: parent.width
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+          Repeater {
+            // Always render exactly `networkTopProcesses` row slots so the
+            // dropdown height stays fixed no matter how many processes are
+            // transferring. Ranks past the live count stay blank but hold
+            // their row, so the panel never resizes.
+            model: (function() { var a = []; for (var i = 0; i < root.networkTopProcesses; i++) a.push(i); return a })()
+            Item {
+              required property int modelData
+              readonly property var info: root.netTopProcs[modelData]
+              width: parent.parent.width
+              height: Style.space(22)
+              Row {
+                visible: modelData < root.netTopProcs.length
+                width: parent.width
+                height: parent.height
+
+                // Name: fills the space left over by pinned pid + up + down.
+                Text {
+                  textFormat: Text.PlainText
+                  text: info ? info.comm : ""
+                  elide: Text.ElideRight
+                  width: Math.max(0, parent.width - Style.space(180))
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  text: info ? info.pid : ""
+                  width: Style.space(52)
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Item {
+                  width: Style.space(4)
+                  height: 1
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(56)
+                  text: info ? Model.formatNetRate(info.up) : ""
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuText
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+                Item {
+                  width: Style.space(4)
+                  height: 1
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: Style.space(60)
+                  text: info ? Model.formatNetRate(info.down) : ""
+                  horizontalAlignment: Text.AlignRight
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: root.cpuData
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+              }
+            }
+          }
+        }
+
+        // Per-process rates come from TCP socket byte counters (ss -tinp), so
+        // they cover TCP traffic only — UDP/QUIC shows up in the aggregate
+        // down/up but can't be split per process without root.
+        Text {
+          width: parent.width
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: "Per-process rates are TCP-attributed (UDP/QUIC counted in the totals above, not split here)."
+          color: root.cpuDim
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       // ==================== Placeholder (other stats) =================
       Column {
-        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk" && root.activeStat.id !== "ram" && root.activeStat.id !== "battery")
+        visible: !root.activeStat || (root.activeStat.id !== "cpu" && root.activeStat.id !== "gpu" && root.activeStat.id !== "disk" && root.activeStat.id !== "ram" && root.activeStat.id !== "battery" && root.activeStat.id !== "network")
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(8)
         PanelSectionHeader {
@@ -2581,6 +2991,7 @@ Panel {
     else if (root.activeStat && root.activeStat.id === "disk") refreshDisk()
     else if (root.activeStat && root.activeStat.id === "ram") refreshRam()
     else if (root.activeStat && root.activeStat.id === "battery") refreshBattery()
+    else if (root.activeStat && root.activeStat.id === "network") refreshNetwork()
   }
 
   function open() { root.controller.show() }
@@ -2611,5 +3022,6 @@ Panel {
     function openDisk(): void { root.openStatId("disk") }
     function openRam(): void { root.openStatId("ram") }
     function openBattery(): void { root.openStatId("battery") }
+    function openNetwork(): void { root.openStatId("network") }
   }
 }

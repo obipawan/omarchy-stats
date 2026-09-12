@@ -437,6 +437,134 @@ function formatRss(mib) {
   return Math.round(v) + "MB"
 }
 
+// ============================ NETWORK =====================================
+// Parses the tab-separated output of net.sh into a single object the panel
+// binds to. net.sh emits:
+//   iface / type / mac / ssid / ip / gateway / connected / online
+//   pingMs / publicIp
+//   down<KB/s> / up<KB/s>       aggregate download / upload rate
+//   totalDown / totalUp         lifetime bytes (boot)
+//   proc\t<pid>\t<upKB/s>\t<downKB/s>\t<comm>
+// Returns { iface, type, mac, ssid, ip, gateway, connected, online, pingMs,
+//           publicIp, down, up, totalDown, totalUp, ready,
+//           procs:[{pid,up,down,comm}] }.
+// `ready` is true when aggregate rates parsed (i.e. an active interface).
+// `pingMs` is -1 when no ping has succeeded yet; `online`/`publicIp` come from
+// the throttled probe and may lag a tick behind the rates.
+function parseNetworkOutput(raw) {
+  var lines = String(raw || "").split("\n")
+  var out = { iface: "", type: "unknown", mac: "", ssid: "", ip: "", gateway: "",
+              connected: false, online: false, pingMs: -1, publicIp: "",
+              down: -1, up: -1, totalDown: -1, totalUp: -1, ready: false, procs: [] }
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("\t")
+    if (parts.length < 2) continue
+    var kind = parts[0]
+    if (kind === "iface") out.iface = String(parts[1] || "")
+    else if (kind === "type") out.type = String(parts[1] || "unknown")
+    else if (kind === "mac") out.mac = String(parts[1] || "")
+    else if (kind === "ssid") out.ssid = String(parts[1] || "")
+    else if (kind === "ip") out.ip = String(parts[1] || "")
+    else if (kind === "gateway") out.gateway = String(parts[1] || "")
+    else if (kind === "connected") out.connected = parts[1] === "1"
+    else if (kind === "online") out.online = parts[1] === "1"
+    else if (kind === "pingMs") { var pm = parseFloat(parts[1]); out.pingMs = isFinite(pm) && pm >= 0 ? pm : -1 }
+    else if (kind === "publicIp") out.publicIp = String(parts[1] || "")
+    else if (kind === "down") { var dn = parseFloat(parts[1]); if (isFinite(dn)) out.down = Math.round(dn * 10) / 10 }
+    else if (kind === "up") { var up = parseFloat(parts[1]); if (isFinite(up)) out.up = Math.round(up * 10) / 10 }
+    else if (kind === "totalDown") { var td = parseFloat(parts[1]); if (isFinite(td)) out.totalDown = td }
+    else if (kind === "totalUp") { var tu = parseFloat(parts[1]); if (isFinite(tu)) out.totalUp = tu }
+    else if (kind === "proc") {
+      var pu = parseFloat(parts[2] || ""); var pd = parseFloat(parts[3] || "")
+      if (isFinite(pu) && isFinite(pd))
+        out.procs.push({ pid: String(parts[1] || "").trim(), up: Math.round(pu * 10) / 10,
+                         down: Math.round(pd * 10) / 10, comm: String(parts[4] || "").trim() })
+    }
+  }
+  out.ready = out.down >= 0 && out.up >= 0
+  return out
+}
+
+// History ring buffer for the network graph. Appends {time, down, up} and
+// drops anything older than `maxSeconds` — the dual-axis down/up analogue of
+// appendIoHistory.
+function appendNetHistory(history, nowSeconds, downKBs, upKBs, maxSeconds) {
+  var h = Array.isArray(history) ? history.slice() : []
+  var max = Math.max(1, parseInt(maxSeconds, 10) || 3600)
+  h.push({ time: Number(nowSeconds) || 0, down: Number(downKBs) || 0, up: Number(upKBs) || 0 })
+  var cutoff = (Number(nowSeconds) || 0) - max
+  while (h.length > 0 && h[0].time < cutoff) h.shift()
+  return h
+}
+
+// streaming timeline analogue of scrollIoWindow for the down/up pair. Returns
+// exactly `buckets` {down, up} columns, NEWEST pinned at the far right; empty
+// leading columns are 0. Pure and node-testable.
+function scrollNetWindow(history, buckets) {
+  var h = Array.isArray(history) ? history : []
+  var n = Math.max(1, parseInt(buckets, 10) || 1)
+  var fill = Math.min(n, h.length)
+  var start = h.length - fill
+  var out = []
+  for (var i = 0; i < n; i++) out.push({ down: 0, up: 0 })
+  for (var k = 0; k < fill; k++) {
+    var e = h[start + k]
+    out[n - fill + k] = { down: Number(e.down) || 0, up: Number(e.up) || 0 }
+  }
+  return out
+}
+
+// Normalize a net window (list of {down, up}) to 0..1 against the SHARED max
+// of down and up, so the two bars of a column are comparable and the plot
+// doesn't rescale every tick. Empty/zero window -> 0.
+function normalizeNet(netWindow) {
+  var v = Array.isArray(netWindow) ? netWindow : []
+  var max = 0
+  for (var i = 0; i < v.length; i++) {
+    var d = Math.abs(Number(v[i].down) || 0); var u = Math.abs(Number(v[i].up) || 0)
+    if (d > max) max = d; if (u > max) max = u
+  }
+  if (max <= 0) max = 1
+  var out = []
+  for (var j = 0; j < v.length; j++)
+    out.push({ down: (Number(v[j].down) || 0) / max, up: (Number(v[j].up) || 0) / max })
+  return out
+}
+
+// Keep the newest `limit` network rows. net.sh sends every TCP socket that
+// moved in the window, already sorted desc by up+down; this caps to the
+// configured number and drops purely-idle rows.
+function topNetProcs(procs, limit) {
+  var rows = Array.isArray(procs) ? procs : []
+  var n = Math.max(1, parseInt(limit, 10) || rows.length)
+  var trimmed = rows.slice(0, Math.min(n, rows.length))
+  return trimmed.filter(function(p) {
+    var u = Number(p && p.up) || 0; var d = Number(p && p.down) || 0
+    return (u > 0 || d > 0) || String(p && p.comm || "") !== ""
+  })
+}
+
+// Format a throughput in KB/s as the bar/table reads it, e.g. "27KB/s",
+// "1.5MB/s", "512B/s". Returns "--" for not available / negative.
+function formatNetRate(kb) {
+  var v = parseFloat(kb)
+  if (!isFinite(v) || v < 0) return "--"
+  if (v >= 1024 * 1024) return (Math.round(v / 10.24) / 100) + "GB/s"
+  if (v >= 1024) return (Math.round(v / 10.24) / 100) + "MB/s"
+  if (v >= 1) return Math.round(v) + "KB/s"
+  return Math.round(v * 1024) + "B/s"
+}
+
+// Format a cumulative byte total (lifetime down/up) as "123MB" or, once it
+// crosses a GiB, "1.5GB". Returns "--" out of range / not available.
+function formatNetTotal(bytes) {
+  var v = parseFloat(bytes)
+  if (!isFinite(v) || v < 0) return "--"
+  var gb = v / (1024 * 1024 * 1024)
+  if (gb >= 1) return (Math.round(gb * 10) / 10) + "GB"
+  return Math.round(v / (1024 * 1024)) + "MB"
+}
+
 // ============================ RAM / SWAP ==================================
 // Parses the tab-separated output of ram.sh into a single object the panel
 // binds to. ram.sh emits (all KiB):
@@ -641,6 +769,13 @@ if (typeof module !== "undefined") {
     formatRate: formatRate,
     formatRamSize: formatRamSize,
     formatRss: formatRss,
+    parseNetworkOutput: parseNetworkOutput,
+    appendNetHistory: appendNetHistory,
+    scrollNetWindow: scrollNetWindow,
+    normalizeNet: normalizeNet,
+    topNetProcs: topNetProcs,
+    formatNetRate: formatNetRate,
+    formatNetTotal: formatNetTotal,
     parseRamOutput: parseRamOutput,
     batteryIcon: batteryIcon,
     parseBatteryOutput: parseBatteryOutput,
