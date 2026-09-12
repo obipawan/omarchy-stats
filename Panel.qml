@@ -220,7 +220,7 @@ Panel {
 
   Row {
     id: statRow
-    spacing: Style.space(1)
+    spacing: Style.space(3)
 
     Repeater {
       model: root.defs
@@ -300,7 +300,7 @@ Panel {
         text: stat.id === "disk" ? root.diskFreeText : stat.label.toLowerCase()
         color: root.cpuText
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Math.max(8, Style.font.caption - 1)
         font.bold: true
       }
       Text {
@@ -310,7 +310,7 @@ Panel {
         text: stat.id === "disk" ? root.diskUsedText : root.livePctText(stat.id)
         color: stat.id === "disk" ? root.cpuText : root.livePctColor(stat.id)
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Math.max(8, Style.font.caption - 1)
         font.bold: true
       }
     }
@@ -1057,49 +1057,56 @@ Panel {
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(10)
 
-        // Aggregate row: WRITE (positive) and READ (negative) rates sit on
-        // the same baseline as the dual-axis graph below.
-        Row {
+        // Aggregate headline: WRITE and READ each on their own line, the value
+        // baseline-aligned to its label (mirrors CPU's TOTAL / GPU's USAGE rows).
+        Column {
           width: parent.width
-          spacing: Style.space(10)
+          spacing: Style.space(6)
 
-          Text {
-            textFormat: Text.PlainText
-            text: "WRITE"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.body
-            font.bold: true
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text {
+              id: diskWriteLabel
+              textFormat: Text.PlainText
+              text: "WRITE"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              id: diskWriteVal
+              textFormat: Text.PlainText
+              anchors.baseline: diskWriteLabel.baseline
+              text: Model.formatRate(root.diskState.write)
+              color: root.cpuData
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
           }
-          Text {
-            id: diskWriteVal
-            textFormat: Text.PlainText
-            text: Model.formatRate(root.diskState.write)
-            color: root.cpuData
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.heading
-            font.bold: true
-          }
-          Item {
-            Layout.fillWidth: true
-            height: 1
-          }
-          Text {
-            textFormat: Text.PlainText
-            text: "READ"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.body
-            font.bold: true
-          }
-          Text {
-            textFormat: Text.PlainText
-            anchors.baseline: diskWriteVal.baseline
-            text: Model.formatRate(root.diskState.read)
-            color: root.cpuText
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.heading
-            font.bold: true
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            Text {
+              id: diskReadLabel
+              textFormat: Text.PlainText
+              text: "READ"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              anchors.baseline: diskReadLabel.baseline
+              text: Model.formatRate(root.diskState.read)
+              color: root.cpuText
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
           }
         }
 
@@ -1293,14 +1300,6 @@ Panel {
                 }
               }
             }
-          }
-          Text {
-            textFormat: Text.PlainText
-            visible: root.diskTopIo.length === 0
-            text: "Collecting…"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
           }
         }
       }
