@@ -318,12 +318,12 @@ Panel {
   readonly property int ramBarWidth: Style.space(34)
   // Battery bar: a two-line column (% over time-to-full/empty) to the LEFT of
   // the omarchy battery icon. The bar item's outer container centers the
-  // contents in this slot width, so a wider slot adds dead gutter on each side
-  // and pushes the neighbours apart (measured gaps ~28px when it hugs content
-  // vs ~50px when oversized). Keep it just big enough to fit the two text lines
-  // + the icon, matching how tightly ram/disk hug their values.
+  // contents in this slot width, so the width should track the rendered content
+  // (two text lines + the enlarged icon) — too tight and the icon overflows into
+  // the next item, too wide and it adds dead gutter. ~40 keeps the neighbours
+  // at a normal gap while giving the bigger icon room.
   readonly property int batteryBarHeight: Style.bar.sizeHorizontal
-  readonly property int batteryBarWidth: Style.space(32)
+  readonly property int batteryBarWidth: Style.space(40)
 
   // The bar host draws an accent pill under/over a module slot while one of
   // its dropdowns is open (see bar/Bar.qml `openPanelIndicator`). It defaults
@@ -497,16 +497,17 @@ Panel {
             font.bold: true
           }
         }
-        // Aligned to the column's centre line. A bare Text in the Row so the Row hugs
-        // the content width (no anchors/alignment on the Text — anchoring or a
-        // vertical alignment shoves the icon away from the column).
+        // The icon, centred vertically against the two-line column and sized up a bit
+        // more. AlignVCenter aligns it to the column's middle; with the slot now
+        // content-hugging (batteryBarWidth 32) this does not push it away.
         Text {
           textFormat: Text.PlainText
           text: root.batteryIconGlyph()
           color: root.batteryColor(root.batteryState.pct)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(14, Style.font.caption + 3)
+          font.pixelSize: Math.max(15, Style.font.caption + 5)
           font.bold: true
+          Layout.alignment: Qt.AlignVCenter
         }
       }
 
