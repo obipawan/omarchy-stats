@@ -497,15 +497,16 @@ Panel {
             font.bold: true
           }
         }
-        // The icon, centred vertically against the two-line column and sized up a bit
-        // more. AlignVCenter aligns it to the column's middle; with the slot now
-        // content-hugging (batteryBarWidth 32) this does not push it away.
+        // The icon, sized up clearly (caption+9 ≈ 19px vs the 14px value lines) so the
+        // bump is actually visible, and vertically centred against the two-line
+        // column. AlignVCenter centres it in the Row's cross-axis (= the column's
+        // full height, so it lands between the % and the time).
         Text {
           textFormat: Text.PlainText
           text: root.batteryIconGlyph()
           color: root.batteryColor(root.batteryState.pct)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Math.max(15, Style.font.caption + 5)
+          font.pixelSize: Math.max(19, Style.font.caption + 9)
           font.bold: true
           Layout.alignment: Qt.AlignVCenter
         }
