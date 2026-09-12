@@ -2704,21 +2704,28 @@ Panel {
         width: dropdownColumn.width - Style.space(8)
         spacing: Style.space(10)
 
-        // Headline: caption + current download/upload rates. Both rates share the
-        // same (body) font; within each pair the icon sits flush against its
-        // value and the pair is left-aligned together.
-        Row {
+        // Headline: TRAFFIC caption, with download and upload each on their own
+        // line. Each keeps its icon flush against its value, left-aligned, so
+        // the two glyphs line up and the values extend right.
+        Column {
           width: parent.width
-          spacing: Style.space(10)
+          spacing: Style.space(2)
 
-          Text {
-            id: netTrafficLabel
-            textFormat: Text.PlainText
-            text: "TRAFFIC"
-            color: root.cpuDim
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.body
-            font.bold: true
+          Row {
+            width: parent.width
+            Text {
+              id: netTrafficLabel
+              textFormat: Text.PlainText
+              text: "TRAFFIC"
+              color: root.cpuDim
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Item {
+              Layout.fillWidth: true
+              height: 1
+            }
           }
           Row {
             spacing: Style.space(0)
@@ -2738,10 +2745,6 @@ Panel {
               font.pixelSize: Style.font.body
               font.bold: true
             }
-          }
-          Item {
-            Layout.fillWidth: true
-            height: 1
           }
           Row {
             spacing: Style.space(0)
