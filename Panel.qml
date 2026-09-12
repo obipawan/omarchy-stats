@@ -20,9 +20,11 @@ import "Model.js" as Model
 // configurable history graph. The other stats still show a placeholder.
 //
 // Per-widget settings come from the shell.json entry (see `setting()`), e.g.:
-//   topProcesses     default 8     how many heavy processes to list
-//   refreshSeconds   default 2     how often to sample CPU
-//   historyMinutes   default 60    length of the usage-history window
+//   topProcesses       default 8     how many heavy processes to list
+//   refreshSeconds     default 2     base sample cadence (CPU + GPU)
+//   cpuRefreshSeconds  default base  CPU poll period, independent override
+//   gpuRefreshSeconds  default base  GPU poll period, independent override
+//   historyMinutes     default 60    length of the usage-history window
 // Set them with: omarchy bar set obi.stats <key> <value>
 Panel {
   id: root
@@ -60,7 +62,13 @@ Panel {
   readonly property string pluginDir:
     Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName
   readonly property int topProcesses: Math.max(1, parseInt(setting("topProcesses", 8), 10) || 8)
+  // Base refresh cadence; each stat can override with its own key:
+  //   cpuRefreshSeconds (defaults to refreshSeconds)
+  //   gpuRefreshSeconds (defaults to refreshSeconds)
+  // This lets a user poll stats independently, e.g. CPU every 1s, GPU every 5s.
   readonly property int refreshSeconds: Math.max(1, parseInt(setting("refreshSeconds", 2), 10) || 2)
+  readonly property int cpuRefreshSeconds: Math.max(1, parseInt(setting("cpuRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
+  readonly property int gpuRefreshSeconds: Math.max(1, parseInt(setting("gpuRefreshSeconds", root.refreshSeconds), 10) || root.refreshSeconds)
   readonly property int historySeconds: Math.max(30, parseInt(setting("historyMinutes", 60), 10) || 60) * 60
 
   // Usage tint thresholds, as percent. Settings (e.g. `omarchy bar set
@@ -326,7 +334,7 @@ Panel {
 
   Timer {
     id: cpuPollTimer
-    interval: root.refreshSeconds * 1000
+    interval: root.cpuRefreshSeconds * 1000
     repeat: true
     running: true
     onTriggered: { if (!root.cpuPolling) root.refreshCpu() }
@@ -337,7 +345,7 @@ Panel {
   // poll for a full second and stretch the effective cadence to ~2-3x
   // refreshSeconds. Pass a window that's a fraction of the poll interval so a
   // run finishes inside one tick — same rule as cpu.sh's sample window.
-  readonly property int gpuSampleMs: Math.max(150, Math.round(root.refreshSeconds * 1000 / 3))
+  readonly property int gpuSampleMs: Math.max(150, Math.round(root.gpuRefreshSeconds * 1000 / 3))
   function refreshGpu() {
     if (root.gpuPolling) return
     root.gpuPolling = true
@@ -365,7 +373,7 @@ Panel {
 
   Timer {
     id: gpuPollTimer
-    interval: root.refreshSeconds * 1000
+    interval: root.gpuRefreshSeconds * 1000
     repeat: true
     running: true
     onTriggered: { if (!root.gpuPolling) root.refreshGpu() }

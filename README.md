@@ -56,20 +56,27 @@ Per-widget settings are stored in the bar layout entry in `~/.config/omarchy/she
 and writable via `omarchy bar set`:
 
 ```bash
-omarchy bar set obi.stats refreshSeconds  2        # CPU sample period
-omarchy bar set obi.stats historyMinutes 60        # history graph window
-omarchy bar set obi.stats topProcesses    8        # rows in the process table
-omarchy bar set obi.stats calmLimit       30       # usage color tier: below = calm
-omarchy bar set obi.stats mildLimit       60       # usage color tier: at/above = alarm
+omarchy bar set obi.stats refreshSeconds      2   # base sample period (fallback)
+omarchy bar set obi.stats cpuRefreshSeconds   2   # CPU poll period (defaults to base)
+omarchy bar set obi.stats gpuRefreshSeconds   2   # GPU poll period (defaults to base)
+omarchy bar set obi.stats historyMinutes     60   # history graph window
+omarchy bar set obi.stats topProcesses        8   # rows in the process table
+omarchy bar set obi.stats calmLimit           30  # usage color tier: below = calm
+omarchy bar set obi.stats mildLimit           60  # usage color tier: at/above = alarm
 ```
+
+CPU and GPU poll independently: set `cpuRefreshSeconds` and `gpuRefreshSeconds`
+to different values and each stat samples on its own cadence (e.g. CPU every
+1s, GPU every 5s). If either key is absent it falls back to `refreshSeconds`.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `refreshSeconds` | 2 (we use 1) | CPU sampling cadence |
+| `refreshSeconds` | 2 | base sample cadence (fallback for both stats) |
+| `cpuRefreshSeconds` | = refreshSeconds | CPU poll period (independent override) |
+| `gpuRefreshSeconds` | = refreshSeconds | GPU poll period (independent override) |
 | `historyMinutes` | 60 | how long the moving graph window spans |
 | `topProcesses` | 8 | how many heavy processes to list |
 | `calmLimit` / `mildLimit` | 30 / 60 | usage-coloring thresholds |
-| `topProcesses` | 8 | process-table row count |
 
 The CPU `%` color maps to three **semantic theme roles** so it stays cohesive
 across every Omarchy theme: `< calmLimit` → `foreground`, `calmLimit..mildLimit`
