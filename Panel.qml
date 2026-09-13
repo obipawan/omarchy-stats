@@ -60,7 +60,7 @@ Panel {
   // Vertical separator drawn between stats. Uses the workspace active-indicator
   // color (bar.urgent == Color.bar.active) and sits vertically centred in the
   // bar slot.
-  readonly property int separatorWidth: Style.space(2)
+  readonly property int separatorWidth: Style.space(1)
   readonly property int separatorHeight: Style.space(8)
   readonly property color separatorColor: root.bar ? root.bar.urgent : Color.bar.active
 
