@@ -57,6 +57,13 @@ Panel {
   // The ordered list of stats (pure data, in Model.js).
   readonly property var defs: Model.statDefinitions()
 
+  // Vertical separator drawn between stats. Uses the workspace active-indicator
+  // color (bar.urgent == Color.bar.active) and sits vertically centred in the
+  // bar slot.
+  readonly property int separatorWidth: Style.space(2)
+  readonly property int separatorHeight: Style.space(8)
+  readonly property color separatorColor: root.bar ? root.bar.urgent : Color.bar.active
+
   // ---- Dropdown state ---------------------------------------------------
   property var activeStat: null
   property var activeButton: null
@@ -535,6 +542,43 @@ Panel {
         }
 
         Component.onCompleted: root.registerBarButton(modelData.id, root.isLiveStat(modelData) ? pctButton : button)
+      }
+    }
+  }
+
+  // Vertical dividers drawn between stats. Kept as an absolute overlay rather
+  // than an interleaved layout entry so the live bar buttons are never
+  // instantiated with a null stat. Their x-position is computed from each
+  // stat's known width + the row spacing, so they land centred in each gap.
+  Item {
+    id: separators
+    anchors.fill: statRow
+    visible: root.defs.length > 0
+    clip: true
+
+    readonly property var xs: (function() {
+      var out = []
+      var x = 0
+      for (var i = 0; i < root.defs.length; i++) {
+        x += root.barItemWidth(root.defs[i])
+        if (i < root.defs.length - 1) {
+          out.push(x + statRow.spacing / 2)
+          x += statRow.spacing
+        }
+      }
+      return out
+    })()
+
+    Repeater {
+      model: separators.xs
+
+      Rectangle {
+        width: root.separatorWidth
+        height: root.separatorHeight
+        radius: width / 2
+        color: root.separatorColor
+        x: modelData - width / 2
+        anchors.verticalCenter: parent.verticalCenter
       }
     }
   }
