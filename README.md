@@ -1,4 +1,4 @@
-# obi.stats
+# stats
 
 A system-stats monitoring widget for the [Omarchy](https://omarchy.org/) status bar
 (Hyprland). It adds a row of clickable bar items for **CPU**, **GPU**, **Disk**,
